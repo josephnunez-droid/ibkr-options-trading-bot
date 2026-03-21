@@ -9,6 +9,14 @@ from ib_insync import IB, Stock, Option, Index, util
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+# ETFs don't have earnings — skip fundamentals lookups for these
+KNOWN_ETFS = {
+    "SPY", "QQQ", "IWM", "GLD", "XLK", "XLF", "SOXX", "VXX",
+    "DIA", "TLT", "HYG", "EEM", "XLE", "XLP", "XLV", "XLI",
+    "XLU", "XLB", "XLRE", "XLC", "ARKK", "SQQQ", "TQQQ",
+}
 
 
 class DataFeed:
@@ -327,6 +335,8 @@ class DataFeed:
 
     def get_earnings_date(self, symbol: str) -> Optional[date]:
         """Get next earnings date for a symbol."""
+        if symbol.upper() in KNOWN_ETFS:
+            return None
         try:
             tk = yf.Ticker(symbol)
             cal = tk.calendar
