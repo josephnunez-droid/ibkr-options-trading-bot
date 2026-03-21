@@ -1,0 +1,178 @@
+# ============================================================
+# IBKR Automated Options Trading Bot - Configuration
+# ============================================================
+
+# --- Connection Settings ---
+connection:
+  host: "127.0.0.1"
+  paper_port: 7497
+  live_port: 7496
+  client_id: 1
+  trading_mode: "paper"   # "paper" or "live"
+  timeout: 30
+  max_reconnect_attempts: 5
+  reconnect_delay: 10     # seconds
+
+# --- Portfolio Universe ---
+universe:
+  mag7:
+    - AAPL
+    - MSFT
+    - NVDA
+    - GOOGL
+    - AMZN
+    - META
+    - TSLA
+  etfs:
+    - SPY
+    - QQQ
+    - IWM
+    - GLD
+    - XLK
+    - XLF
+    - SOXX
+    - VXX
+  dynamic_screener:
+    enabled: true
+    top_n: 20
+    min_market_cap: 10_000_000_000  # $10B
+    min_option_volume: 1000
+    refresh_time: "09:05"
+
+# --- Strategy Settings ---
+strategies:
+  covered_call:
+    enabled: true
+    target_delta_min: 0.20
+    target_delta_max: 0.35
+    min_dte: 30
+    max_dte: 45
+    min_iv_rank: 30
+    earnings_blackout_days: 7
+    roll_dte_threshold: 7
+    roll_itm_threshold: 0.01
+
+  cash_secured_put:
+    enabled: true
+    target_delta_min: -0.30
+    target_delta_max: -0.20
+    min_dte: 30
+    max_dte: 45
+    min_iv_rank: 40
+    max_buying_power_pct: 0.20
+    earnings_blackout_days: 5
+
+  wheel:
+    enabled: true
+    exit_profit_pct: 0.05
+    prefer_symbols:
+      - AAPL
+      - MSFT
+      - GOOGL
+      - AMZN
+      - SPY
+
+  iron_condor:
+    enabled: true
+    min_dte: 30
+    max_dte: 45
+    wing_std_dev: 1.0
+    min_vix: 18
+    profit_target_pct: 0.33
+    symbols:
+      - SPY
+      - QQQ
+      - IWM
+
+  credit_spread:
+    enabled: true
+    min_dte: 30
+    max_dte: 45
+    sma_fast: 20
+    sma_slow: 50
+    width_under_200: 5
+    width_over_200: 10
+    max_risk_pct: 0.02
+
+  debit_spread:
+    enabled: true
+    days_before_earnings: 7
+    exit_days_before_earnings: 1
+    max_spend_pct: 0.005
+
+# --- Hedging ---
+hedging:
+  enabled: true
+  delta_threshold: 0.50
+  intraday_drop_pct: 0.05
+  stock_drop_pct: 0.08
+  gap_down_pct: 0.10
+  vix_spike_pct: 0.25
+  auto_convert_to_cc: true
+
+# --- Risk Management ---
+risk:
+  max_portfolio_options_pct: 0.40
+  max_single_name_pct: 0.10
+  max_daily_loss_pct: 0.02
+  margin_buffer_pct: 0.30
+  earnings_blackout_days: 5
+  kelly_fraction: 0.25
+  min_win_rate: 0.50
+  max_position_count: 30
+
+# --- Execution ---
+execution:
+  order_type: "LMT"
+  mid_price_offset: 0.0
+  aggressive_retry_seconds: 120
+  aggressive_offset: 0.02
+  max_retries: 3
+  cancel_timeout: 300
+
+# --- Scheduling (ET timezone) ---
+schedule:
+  timezone: "US/Eastern"
+  pre_market_scan: "09:00"
+  market_open_execute: "09:35"
+  midday_check: "12:00"
+  power_hour: "15:30"
+  after_hours_report: "16:30"
+
+# --- Notifications ---
+notifications:
+  enabled: false
+  method: "telegram"
+  telegram:
+    bot_token: ""
+    chat_id: ""
+  email:
+    smtp_server: ""
+    smtp_port: 587
+    sender: ""
+    password: ""
+    recipient: ""
+  alert_on:
+    - fills
+    - hedge_triggers
+    - margin_warnings
+    - daily_loss_limit
+    - errors
+
+# --- Reporting ---
+reporting:
+  db_path: "db/trades.db"
+  reports_dir: "reports"
+  logs_dir: "logs"
+  log_level: "INFO"
+  log_max_bytes: 10_000_000
+  log_backup_count: 5
+  html_report_template: "templates/daily_report.html"
+
+# --- Dashboard ---
+dashboard:
+  refresh_interval: 5
+  show_greeks: true
+  show_pnl: true
+  show_positions: true
+  show_orders: true
