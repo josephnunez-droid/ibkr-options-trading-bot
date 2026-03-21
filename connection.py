@@ -31,8 +31,9 @@ class ConnectionManager:
         self.max_reconnects = self.config["max_reconnect_attempts"]
         self.reconnect_delay = self.config["reconnect_delay"]
 
-        # Register disconnect handler
-        self.ib.disconnectedEvent += self._on_disconnect
+        # Register disconnect handler (use lambda to keep strong reference)
+        self._disconnect_handler = lambda: self._on_disconnect()
+        self.ib.disconnectedEvent += self._disconnect_handler
 
     @property
     def is_connected(self) -> bool:
