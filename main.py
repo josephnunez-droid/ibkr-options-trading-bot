@@ -451,8 +451,10 @@ def main():
     bot = TradingBot(config)
     _bot = bot
 
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    import threading
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
 
     if not bot.initialize():
         sys.exit(1)
