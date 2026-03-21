@@ -440,6 +440,14 @@ def main():
         config_path = script_dir / "config.yaml"
 
     config = load_config(str(config_path))
+
+    # Each mode gets a unique client ID so they can run simultaneously
+    client_id_offsets = {"dashboard": 1, "scan": 2, "report": 3, "kill": 4}
+    for mode, offset in client_id_offsets.items():
+        if getattr(args, mode, False):
+            config["connection"]["client_id"] = config["connection"].get("client_id", 1) + offset
+            break
+
     setup_logging(config)
 
     console.print(Panel(
