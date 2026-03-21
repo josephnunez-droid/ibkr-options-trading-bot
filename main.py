@@ -14,12 +14,19 @@ Default mode is PAPER TRADING. Change in config.yaml to go live.
 
 import sys
 import os
+import asyncio
 import argparse
 import logging
 import signal
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+# Ensure an event loop exists before importing ib_insync (required for Python 3.14+)
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
