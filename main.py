@@ -32,6 +32,7 @@ import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from rich.console import Console
+from rich.panel import Panel
 
 from connection import ConnectionManager
 from data_feeds import DataFeed
