@@ -139,6 +139,25 @@ schedule:
   power_hour: "15:30"
   after_hours_report: "16:30"
 
+# --- Market Monitor ---
+# Scans top 100 NYSE stocks multiple times per trading day
+# Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+market_monitor:
+  enabled: true
+  top_n_report: 100
+  scan_times:              # ET timezone, weekdays only
+    - "08:30"              # Pre-market overview
+    - "10:00"              # Post-open analysis
+    - "12:00"              # Midday check
+    - "14:00"              # Afternoon update
+    - "15:45"              # End-of-day summary
+  # Alert thresholds
+  rsi_overbought: 70
+  rsi_oversold: 30
+  iv_rank_high: 70
+  macd_crossover_notify: true
+  sma_crossover_notify: true
+
 # --- Notifications ---
 notifications:
   enabled: false
@@ -158,6 +177,7 @@ notifications:
     - margin_warnings
     - daily_loss_limit
     - errors
+    - market_monitor
 
 # --- Reporting ---
 reporting:

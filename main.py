@@ -6,6 +6,7 @@ Usage:
     python main.py                    # Run bot in scheduled mode
     python main.py --dashboard        # Show terminal dashboard only
     python main.py --scan             # Run one-time scan
+    python main.py --monitor          # Run one-time market monitor scan (top 100 NYSE)
     python main.py --report           # Generate daily report
     python main.py --kill             # Emergency: cancel all orders & close positions
 
@@ -43,6 +44,7 @@ from hedge_manager import HedgeManager
 from reporter import Reporter
 from db.models import init_db
 
+from market_monitor import MarketMonitor
 from strategies.covered_call import CoveredCallStrategy
 from strategies.cash_secured_put import CashSecuredPutStrategy
 from strategies.wheel import WheelStrategy
@@ -115,6 +117,7 @@ class TradingBot:
         self.reporter = None
         self.strategies = {}
         self.universe = []
+        self.market_monitor = None
 
     def initialize(self) -> bool:
         """Connect to IBKR and initialize all components."""
@@ -143,6 +146,8 @@ class TradingBot:
             self.config, self.data_feed, self.executor, self.risk_engine
         )
         self.reporter = Reporter(self.config, self.data_feed, self.risk_engine)
+
+        self.market_monitor = MarketMonitor(self.config, self.reporter)
 
         account = self.conn.get_account_summary()
         net_liq = account.get("NetLiquidation", 0)
@@ -173,6 +178,24 @@ class TradingBot:
         return True
 
     # ---- Scheduled Tasks ----
+
+    def market_monitor_scan(self):
+        """Run market monitor scan on top 100 NYSE stocks."""
+        logger.info("=" * 60)
+        logger.info("MARKET MONITOR SCAN")
+        logger.info("=" * 60)
+
+        try:
+            df = self.market_monitor.run_scan()
+            logger.info(f"Market monitor: analyzed {len(df)} stocks")
+        except Exception as e:
+            logger.error(f"Market monitor scan failed: {e}")
+            if self.reporter:
+                self.reporter.send_alert(
+                    f"Market monitor scan failed: {e}",
+                    level="WARNING",
+                    category="errors",
+                )
 
     def pre_market_scan(self):
         """9:00 AM ET - Screen universe, check IV, earnings."""
@@ -358,6 +381,27 @@ class TradingBot:
             )
             logger.info(f"Scheduled: {task_name} at {h}:{m} ET (Mon-Fri)")
 
+        # Market Monitor scans (multiple times per trading day)
+        monitor_cfg = self.config.get("market_monitor", {})
+        if monitor_cfg.get("enabled", True):
+            monitor_times = monitor_cfg.get("scan_times", [
+                "08:30", "10:00", "12:00", "14:00", "15:45",
+            ])
+            for i, time_str in enumerate(monitor_times):
+                h, m = time_str.split(":")
+                job_id = f"market_monitor_{i}"
+                self.scheduler.add_job(
+                    self.market_monitor_scan,
+                    CronTrigger(
+                        hour=int(h), minute=int(m),
+                        day_of_week="mon-fri",
+                        timezone=tz,
+                    ),
+                    id=job_id,
+                    name=f"market_monitor_{time_str}",
+                )
+                logger.info(f"Scheduled: market_monitor at {h}:{m} ET (Mon-Fri)")
+
         self._running = True
         console.print("\n[bold green]Bot is running. Press Ctrl+C to stop.[/bold green]\n")
 
@@ -429,6 +473,7 @@ def main():
     parser.add_argument("--config", default="config.yaml", help="Path to config file")
     parser.add_argument("--dashboard", action="store_true", help="Show terminal dashboard")
     parser.add_argument("--scan", action="store_true", help="Run one-time scan")
+    parser.add_argument("--monitor", action="store_true", help="Run one-time market monitor scan")
     parser.add_argument("--report", action="store_true", help="Generate daily report")
     parser.add_argument("--kill", action="store_true", help="Emergency kill switch")
 
@@ -442,7 +487,7 @@ def main():
     config = load_config(str(config_path))
 
     # Each mode gets a unique client ID so they can run simultaneously
-    client_id_offsets = {"dashboard": 1, "scan": 2, "report": 3, "kill": 4}
+    client_id_offsets = {"dashboard": 1, "scan": 2, "monitor": 5, "report": 3, "kill": 4}
     for mode, offset in client_id_offsets.items():
         if getattr(args, mode, False):
             config["connection"]["client_id"] = config["connection"].get("client_id", 1) + offset
@@ -473,6 +518,8 @@ def main():
         bot.run_dashboard()
     elif args.scan:
         bot.run_scan_once()
+    elif args.monitor:
+        bot.market_monitor_scan()
     elif args.report:
         bot.run_report()
     else:
