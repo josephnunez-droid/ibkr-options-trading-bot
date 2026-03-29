@@ -121,6 +121,55 @@ def _compute_iv_rank(symbol: str) -> float:
         return 50.0
 
 
+def _fetch_atm_greeks(symbol: str, price: float) -> dict:
+    """Fetch Greeks for the nearest ATM option (call) from yfinance."""
+    greeks = {"opt_delta": None, "opt_gamma": None, "opt_theta": None,
+              "opt_vega": None, "opt_iv": None, "opt_strike": None,
+              "opt_expiry": None}
+    try:
+        tk = yf.Ticker(symbol)
+        expirations = tk.options
+        if not expirations:
+            return greeks
+
+        # Pick the nearest expiry that is >= 20 DTE (skip weeklies)
+        today = date.today()
+        target_exp = None
+        for exp_str in expirations:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            dte = (exp_date - today).days
+            if 20 <= dte <= 60:
+                target_exp = exp_str
+                break
+        if target_exp is None and expirations:
+            target_exp = expirations[min(1, len(expirations) - 1)]
+
+        chain = tk.option_chain(target_exp)
+        calls = chain.calls
+        if calls.empty:
+            return greeks
+
+        # Find the strike closest to current price (ATM)
+        calls = calls.copy()
+        calls["dist"] = abs(calls["strike"] - price)
+        atm = calls.loc[calls["dist"].idxmin()]
+
+        greeks["opt_strike"] = float(atm["strike"])
+        greeks["opt_expiry"] = target_exp
+        greeks["opt_iv"] = round(float(atm.get("impliedVolatility", 0)) * 100, 2)
+
+        # yfinance option chains include Greeks when available
+        for greek, col in [("opt_delta", "delta"), ("opt_gamma", "gamma"),
+                           ("opt_theta", "theta"), ("opt_vega", "vega")]:
+            val = atm.get(col)
+            if val is not None and not pd.isna(val):
+                greeks[greek] = round(float(val), 4)
+
+        return greeks
+    except Exception:
+        return greeks
+
+
 class MarketMonitor:
     """
     Monitors the top 100 NYSE stocks with full technical analysis.
@@ -273,6 +322,9 @@ class MarketMonitor:
         today_volume = float(hist["Volume"].iloc[-1]) if not hist.empty else 0
         volume_ratio = today_volume / avg_volume if avg_volume > 0 else 1.0
 
+        # ATM Options Greeks
+        greeks = _fetch_atm_greeks(symbol, price)
+
         return {
             "symbol": symbol,
             "price": price,
@@ -296,6 +348,14 @@ class MarketMonitor:
             "iv_rank": round(iv_rank, 2),
             "avg_volume": int(avg_volume),
             "volume_ratio": round(volume_ratio, 2),
+            # ATM Options Greeks
+            "opt_delta": greeks["opt_delta"],
+            "opt_gamma": greeks["opt_gamma"],
+            "opt_theta": greeks["opt_theta"],
+            "opt_vega": greeks["opt_vega"],
+            "opt_iv": greeks["opt_iv"],
+            "opt_strike": greeks["opt_strike"],
+            "opt_expiry": greeks["opt_expiry"],
         }
 
     def _rank_stocks(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -462,9 +522,12 @@ class MarketMonitor:
             rsi_str = f"RSI={row['rsi']:.0f}" if row.get('rsi') is not None else "RSI=N/A"
             iv_str = f"IV={row['iv_rank']:.0f}%"
             chg_str = f"{row['day_change_pct']:+.1f}%"
+            delta_str = f"Δ={row['opt_delta']:.2f}" if row.get('opt_delta') is not None else ""
+            theta_str = f"Θ={row['opt_theta']:.3f}" if row.get('opt_theta') is not None else ""
+            greeks_str = f" | {delta_str} {theta_str}" if delta_str else ""
             lines.append(
                 f"  #{row['rank']} {row['symbol']:6s} ${row['price']:.2f} "
-                f"({chg_str}) | {rsi_str} | {iv_str}"
+                f"({chg_str}) | {rsi_str} | {iv_str}{greeks_str}"
             )
 
         # Count notable conditions
@@ -507,3 +570,181 @@ class MarketMonitor:
         json_path.write_text(json.dumps(summary, indent=2, default=str))
 
         return csv_path, json_path
+
+    def build_email_html(self, df: pd.DataFrame, scan_time: datetime, scan_label: str = "Scan") -> str:
+        """Build a professional HTML email report from scan results."""
+        if df.empty:
+            return "<p>Scan returned no results.</p>"
+
+        top_10 = df.head(10)
+        bottom_10 = df.tail(10).iloc[::-1] if len(df) >= 20 else pd.DataFrame()
+
+        # Count signals
+        overbought = df[df["rsi"] >= self.rsi_overbought] if "rsi" in df.columns else pd.DataFrame()
+        oversold = df[df["rsi"] <= self.rsi_oversold] if "rsi" in df.columns else pd.DataFrame()
+        high_iv = df[df["iv_rank"] >= self.iv_rank_high]
+        macd_bull = df[df["macd_cross"] == "BULLISH"] if "macd_cross" in df.columns else pd.DataFrame()
+        macd_bear = df[df["macd_cross"] == "BEARISH"] if "macd_cross" in df.columns else pd.DataFrame()
+        golden = df[df["sma_cross"] == "GOLDEN_CROSS"] if "sma_cross" in df.columns else pd.DataFrame()
+        death = df[df["sma_cross"] == "DEATH_CROSS"] if "sma_cross" in df.columns else pd.DataFrame()
+
+        bullish_count = len(oversold) + len(macd_bull) + len(golden)
+        bearish_count = len(overbought) + len(macd_bear) + len(death)
+        if bullish_count > bearish_count:
+            sentiment, sent_color = "BULLISH", "#00e676"
+        elif bearish_count > bullish_count:
+            sentiment, sent_color = "BEARISH", "#ff5252"
+        else:
+            sentiment, sent_color = "NEUTRAL", "#ffab00"
+
+        def _fmt(val, fmt=".2f"):
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return "—"
+            return f"{val:{fmt}}"
+
+        def _color(val, positive_good=True):
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return "#888"
+            if positive_good:
+                return "#00e676" if val >= 0 else "#ff5252"
+            return "#ff5252" if val >= 0 else "#00e676"
+
+        def _rsi_color(val):
+            if val is None:
+                return "#888"
+            if val >= 70:
+                return "#ff5252"
+            if val <= 30:
+                return "#00e676"
+            return "#e0e0e0"
+
+        def _stock_row(row):
+            chg_c = _color(row.get("day_change_pct"))
+            rsi_c = _rsi_color(row.get("rsi"))
+            macd_c = "#00e676" if row.get("macd_cross") == "BULLISH" else "#ff5252" if row.get("macd_cross") == "BEARISH" else "#e0e0e0"
+
+            sma_status = ""
+            if row.get("price_vs_sma200") is not None:
+                if row["price_vs_sma200"] > 0:
+                    sma_status = "Above 200"
+                else:
+                    sma_status = "Below 200"
+            if row.get("sma_cross"):
+                sma_status = row["sma_cross"].replace("_", " ").title()
+
+            return f"""<tr>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a;color:#00d4ff;font-weight:bold">{row['symbol']}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">${row['price']:.2f}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a;color:{chg_c}" align="right">{row['day_change_pct']:+.2f}%</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a;color:{rsi_c}" align="right">{_fmt(row.get('rsi'), '.0f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a;color:{macd_c}" align="right">{_fmt(row.get('macd'), '.3f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('stoch_k'), '.0f')}/{_fmt(row.get('stoch_d'), '.0f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('iv_rank'), '.0f')}%</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a;font-size:12px">{sma_status}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('opt_delta'), '.3f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('opt_gamma'), '.4f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('opt_theta'), '.3f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('opt_vega'), '.3f')}</td>
+                <td style="padding:6px 10px;border-bottom:1px solid #2a2a4a" align="right">{_fmt(row.get('volume_ratio'), '.1f')}x</td>
+            </tr>"""
+
+        table_header = """<tr>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:left">Symbol</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Price</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Chg%</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">RSI</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">MACD</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Stoch</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">IV Rank</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:left">SMA</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Δ</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Γ</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Θ</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">V</th>
+            <th style="background:#16213e;color:#00d4ff;padding:8px 10px;text-align:right">Vol</th>
+        </tr>"""
+
+        top_rows = "\n".join(_stock_row(row) for _, row in top_10.iterrows())
+        bottom_rows = "\n".join(_stock_row(row) for _, row in bottom_10.iterrows()) if not bottom_10.empty else ""
+
+        # Alerts section
+        alerts_html = ""
+        alert_items = []
+        if not overbought.empty:
+            alert_items.append(f'<li style="color:#ff5252"><b>RSI Overbought (&gt;70):</b> {", ".join(overbought["symbol"].tolist())}</li>')
+        if not oversold.empty:
+            alert_items.append(f'<li style="color:#00e676"><b>RSI Oversold (&lt;30):</b> {", ".join(oversold["symbol"].tolist())}</li>')
+        if not macd_bull.empty:
+            alert_items.append(f'<li style="color:#00e676"><b>MACD Bullish Cross:</b> {", ".join(macd_bull["symbol"].tolist())}</li>')
+        if not macd_bear.empty:
+            alert_items.append(f'<li style="color:#ff5252"><b>MACD Bearish Cross:</b> {", ".join(macd_bear["symbol"].tolist())}</li>')
+        if not golden.empty:
+            alert_items.append(f'<li style="color:#00e676"><b>Golden Cross (SMA20&gt;50):</b> {", ".join(golden["symbol"].tolist())}</li>')
+        if not death.empty:
+            alert_items.append(f'<li style="color:#ff5252"><b>Death Cross (SMA20&lt;50):</b> {", ".join(death["symbol"].tolist())}</li>')
+        if not high_iv.empty:
+            alert_items.append(f'<li style="color:#ffab00"><b>High IV Rank (&gt;70%):</b> {", ".join(high_iv["symbol"].tolist())} — good for premium selling</li>')
+
+        # High volume
+        high_vol = df[df["volume_ratio"] >= 2.0] if "volume_ratio" in df.columns else pd.DataFrame()
+        if not high_vol.empty:
+            alert_items.append(f'<li style="color:#ffab00"><b>Unusual Volume (&gt;2x):</b> {", ".join(high_vol["symbol"].tolist())}</li>')
+
+        if alert_items:
+            alerts_html = f'<h2 style="color:#ffab00;margin-top:25px">Alerts &amp; Signals</h2><ul style="line-height:1.8">{"".join(alert_items)}</ul>'
+
+        # Options opportunities
+        options_html = ""
+        if not high_iv.empty:
+            opt_rows = "\n".join(_stock_row(row) for _, row in high_iv.head(10).iterrows())
+            options_html = f"""
+            <h2 style="color:#00d4ff;margin-top:25px">Options Opportunities (High IV Rank)</h2>
+            <p style="color:#888">Stocks with elevated IV Rank — ideal for premium selling strategies (covered calls, cash-secured puts, iron condors).</p>
+            <table style="border-collapse:collapse;width:100%;font-size:13px">{table_header}{opt_rows}</table>"""
+
+        html = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:20px;background:#1a1a2e;color:#e0e0e0">
+    <div style="max-width:1100px;margin:0 auto">
+        <h1 style="color:#00d4ff;border-bottom:2px solid #00d4ff;padding-bottom:10px">
+            Market Monitor — {scan_label}
+        </h1>
+        <p style="color:#888">{scan_time.strftime('%A, %B %d, %Y at %I:%M %p ET')} | {len(df)} symbols scanned</p>
+
+        <div style="display:flex;gap:15px;margin:20px 0;flex-wrap:wrap">
+            <div style="background:#16213e;padding:15px 25px;border-radius:8px;text-align:center;flex:1;min-width:120px">
+                <div style="font-size:28px;font-weight:bold;color:{sent_color}">{sentiment}</div>
+                <div style="font-size:12px;color:#888">Market Sentiment</div>
+            </div>
+            <div style="background:#16213e;padding:15px 25px;border-radius:8px;text-align:center;flex:1;min-width:120px">
+                <div style="font-size:28px;font-weight:bold;color:#00e676">{len(oversold)}</div>
+                <div style="font-size:12px;color:#888">Oversold (RSI&lt;30)</div>
+            </div>
+            <div style="background:#16213e;padding:15px 25px;border-radius:8px;text-align:center;flex:1;min-width:120px">
+                <div style="font-size:28px;font-weight:bold;color:#ff5252">{len(overbought)}</div>
+                <div style="font-size:12px;color:#888">Overbought (RSI&gt;70)</div>
+            </div>
+            <div style="background:#16213e;padding:15px 25px;border-radius:8px;text-align:center;flex:1;min-width:120px">
+                <div style="font-size:28px;font-weight:bold;color:#ffab00">{len(high_iv)}</div>
+                <div style="font-size:12px;color:#888">High IV Rank</div>
+            </div>
+        </div>
+
+        {alerts_html}
+
+        <h2 style="color:#00d4ff;margin-top:25px">Top 10 by Composite Score</h2>
+        <table style="border-collapse:collapse;width:100%;font-size:13px">{table_header}{top_rows}</table>
+
+        {"<h2 style='color:#00d4ff;margin-top:25px'>Bottom 10</h2><table style='border-collapse:collapse;width:100%;font-size:13px'>" + table_header + bottom_rows + "</table>" if bottom_rows else ""}
+
+        {options_html}
+
+        <div style="margin-top:30px;padding-top:10px;border-top:1px solid #2a2a4a;color:#666;font-size:11px">
+            IBKR Options Trading Bot — Market Monitor | Auto-generated report<br>
+            Indicators: RSI(14), MACD(12,26,9), Stochastic(14,3,3), SMA(20,50,200) | Greeks: ATM Call Options
+        </div>
+    </div>
+</body>
+</html>"""
+        return html
