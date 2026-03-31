@@ -189,6 +189,24 @@ reporting:
   log_backup_count: 5
   html_report_template: "templates/daily_report.html"
 
+# --- Market Monitor ---
+market_monitor:
+  enabled: true
+  symbols_count: 100        # Top N NYSE stocks to track
+  scan_times:               # Multiple scans per day (ET)
+    - "09:15"               # Pre-market / early morning
+    - "11:30"               # Late morning
+    - "14:00"               # Early afternoon
+    - "15:45"               # Near close
+  notify_on_changes: true   # Email when significant changes detected
+  notify_always: false      # Email every scan even without changes
+  change_thresholds:
+    price_move_pct: 3.0     # Flag moves > 3%
+    iv_rank_high: 70        # Flag IV rank above this
+    iv_rank_low: 20         # Flag IV rank below this
+    rsi_overbought: 70
+    rsi_oversold: 30
+
 # --- Dashboard ---
 dashboard:
   refresh_interval: 5

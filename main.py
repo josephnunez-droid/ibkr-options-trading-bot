@@ -352,6 +352,43 @@ class TradingBot:
             category="fills",
         )
 
+    # ---- Market Monitor ----
+
+    def market_monitor_scan(self):
+        """Run market monitor scan and send notification if changes detected."""
+        logger.info("=" * 60)
+        logger.info("MARKET MONITOR SCAN")
+        logger.info("=" * 60)
+
+        monitor = MarketMonitor(self.config, self.config.get("reporting", {}).get("reports_dir", "reports"))
+        text_summary, html_report, changes = monitor.run_scan_and_report()
+
+        logger.info(f"Market monitor: {len(changes)} changes detected")
+
+        # Always log the summary
+        for line in text_summary.split("\n")[:30]:
+            logger.info(line)
+
+        notify_cfg = self.config.get("market_monitor", {})
+        should_notify = (
+            notify_cfg.get("notify_always", False)
+            or (notify_cfg.get("notify_on_changes", True) and changes)
+        )
+
+        if should_notify and self.reporter:
+            change_summary = f"Market Monitor: {len(changes)} changes detected" if changes else "Market Monitor: Scheduled scan complete"
+            self.reporter.send_alert(change_summary, level="INFO", category="market_monitor")
+
+        return text_summary, changes
+
+    def run_market_monitor(self):
+        """Run a one-time market monitor scan (standalone mode)."""
+        monitor = MarketMonitor(self.config, self.config.get("reporting", {}).get("reports_dir", "reports"))
+        text_summary, html_report, changes = monitor.run_scan_and_report()
+        console.print(text_summary)
+        if changes:
+            console.print(f"\n[yellow]{len(changes)} significant changes detected[/yellow]")
+
     # ---- Modes ----
 
     def run_scheduled(self):
@@ -514,12 +551,12 @@ def main():
 
     if args.kill:
         bot.kill_switch()
+    elif args.monitor:
+        bot.market_monitor_scan()
     elif args.dashboard:
         bot.run_dashboard()
     elif args.scan:
         bot.run_scan_once()
-    elif args.monitor:
-        bot.market_monitor_scan()
     elif args.report:
         bot.run_report()
     else:
