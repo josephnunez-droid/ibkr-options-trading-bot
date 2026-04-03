@@ -147,7 +147,10 @@ class TradingBot:
         )
         self.reporter = Reporter(self.config, self.data_feed, self.risk_engine)
 
-        self.market_monitor = MarketMonitor(self.config, self.reporter)
+        self.market_monitor = MarketMonitor(
+            self.config,
+            self.config.get("reporting", {}).get("reports_dir", "reports"),
+        )
 
         account = self.conn.get_account_summary()
         net_liq = account.get("NetLiquidation", 0)
@@ -178,24 +181,6 @@ class TradingBot:
         return True
 
     # ---- Scheduled Tasks ----
-
-    def market_monitor_scan(self):
-        """Run market monitor scan on top 100 NYSE stocks."""
-        logger.info("=" * 60)
-        logger.info("MARKET MONITOR SCAN")
-        logger.info("=" * 60)
-
-        try:
-            df = self.market_monitor.run_scan()
-            logger.info(f"Market monitor: analyzed {len(df)} stocks")
-        except Exception as e:
-            logger.error(f"Market monitor scan failed: {e}")
-            if self.reporter:
-                self.reporter.send_alert(
-                    f"Market monitor scan failed: {e}",
-                    level="WARNING",
-                    category="errors",
-                )
 
     def pre_market_scan(self):
         """9:00 AM ET - Screen universe, check IV, earnings."""

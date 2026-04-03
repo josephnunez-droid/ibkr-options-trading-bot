@@ -270,6 +270,10 @@ class Reporter:
         elif method == "email":
             self._send_email(message, level)
 
+        # Desktop notification (always attempted if enabled)
+        if self.config.get("market_monitor", {}).get("desktop_notifications", False):
+            self._send_desktop_notification(f"IBKR Bot [{level}]", message)
+
     def _send_telegram(self, message: str, level: str):
         """Send Telegram notification."""
         import requests
@@ -312,6 +316,25 @@ class Reporter:
                 server.send_message(msg)
         except Exception as e:
             logger.error(f"Email notification failed: {e}")
+
+    @staticmethod
+    def _send_desktop_notification(title: str, body: str):
+        """Send OS desktop notification (Linux/macOS/Windows)."""
+        import subprocess
+        import platform
+
+        try:
+            system = platform.system()
+            if system == "Linux":
+                subprocess.run(
+                    ["notify-send", "--urgency=normal", "--app-name=IBKR Bot", title, body],
+                    timeout=5, check=False,
+                )
+            elif system == "Darwin":
+                script = f'display notification "{body}" with title "{title}"'
+                subprocess.run(["osascript", "-e", script], timeout=5, check=False)
+        except Exception as e:
+            logger.debug(f"Desktop notification failed: {e}")
 
 
 # --- HTML Report Template ---

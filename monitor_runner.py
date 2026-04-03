@@ -1,15 +1,13 @@
 """
-Monitor Runner: Entry point for the scheduled market monitor trigger.
+Monitor Runner: Entry point for scheduled and one-off market monitor scans.
 
-This script is invoked by Claude Code scheduled triggers to:
-1. Run the full market scan (top 100 NYSE stocks)
-2. Analyze Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
-3. Save reports locally
-4. Print summary for the trigger to email via Gmail
+Runs independently of IBKR — uses yfinance for all market data.
+Analyzes top 100 NYSE stocks: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics.
 
 Usage:
-    python monitor_runner.py [--session pre_market|midday|power_hour|closing]
-    python monitor_runner.py --session pre_market --no-options
+    python monitor_runner.py                              # Run midday scan
+    python monitor_runner.py --session pre_market          # Run specific session
+    python monitor_runner.py --session closing --notify    # Scan + send notifications
 """
 
 import argparse
@@ -18,25 +16,61 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from market_monitor import run_scan
+import yaml
 
-# Setup logging
+from market_monitor import MarketMonitor
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("monitor_runner")
 
 SESSION_LABELS = {
     "pre_market": "Pre-Market Scan (8:30 AM ET)",
-    "morning": "Morning Update (10:30 AM ET)",
-    "midday": "Midday Analysis (12:30 PM ET)",
-    "afternoon": "Afternoon Check (2:30 PM ET)",
-    "closing": "Closing Summary (4:15 PM ET)",
+    "morning": "Morning Update (10:00 AM ET)",
+    "midday": "Midday Analysis (12:00 PM ET)",
+    "afternoon": "Afternoon Check (2:00 PM ET)",
+    "closing": "Closing Summary (3:45 PM ET)",
 }
+
+
+def load_config() -> dict:
+    config_path = Path(__file__).parent / "config.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    return {}
+
+
+def send_desktop_notification(title: str, body: str):
+    """Send OS desktop notification (Linux/macOS/Windows)."""
+    try:
+        import subprocess
+        import platform
+
+        system = platform.system()
+        if system == "Linux":
+            subprocess.run(
+                ["notify-send", "--urgency=normal", "--app-name=IBKR Monitor", title, body],
+                timeout=5, check=False,
+            )
+        elif system == "Darwin":
+            script = f'display notification "{body}" with title "{title}"'
+            subprocess.run(["osascript", "-e", script], timeout=5, check=False)
+        elif system == "Windows":
+            # PowerShell toast notification
+            ps = (
+                f'[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null; '
+                f'$n = New-Object System.Windows.Forms.NotifyIcon; '
+                f'$n.Icon = [System.Drawing.SystemIcons]::Information; '
+                f'$n.Visible = $true; '
+                f'$n.ShowBalloonTip(5000, "{title}", "{body}", "Info")'
+            )
+            subprocess.run(["powershell", "-Command", ps], timeout=5, check=False)
+    except Exception as e:
+        logger.debug(f"Desktop notification failed: {e}")
 
 
 def main():
@@ -48,49 +82,54 @@ def main():
         help="Which session to run",
     )
     parser.add_argument(
-        "--no-options",
+        "--notify",
         action="store_true",
-        help="Skip options data fetch (faster)",
+        help="Send desktop notification with results",
     )
     args = parser.parse_args()
 
     session_label = SESSION_LABELS[args.session]
-    include_options = not args.no_options
+    config = load_config()
 
     logger.info(f"Running market monitor: {session_label}")
 
-    df, text_summary, html_report = run_scan(
-        session_label=session_label,
-        include_options=include_options,
-    )
+    reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
+    monitor = MarketMonitor(config, reports_dir)
+    text_summary, html_report, changes = monitor.run_scan_and_report()
 
     # Save reports
-    reports_dir = Path("reports/monitor")
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir_path = Path(reports_dir) / "monitor"
+    reports_dir_path.mkdir(parents=True, exist_ok=True)
 
     date_str = datetime.now().strftime("%Y%m%d")
     time_str = datetime.now().strftime("%H%M")
 
-    text_path = reports_dir / f"monitor_{date_str}_{args.session}_{time_str}.txt"
-    html_path = reports_dir / f"monitor_{date_str}_{args.session}_{time_str}.html"
-
+    text_path = reports_dir_path / f"monitor_{date_str}_{args.session}_{time_str}.txt"
     text_path.write_text(text_summary)
-    html_path.write_text(html_report)
+    logger.info(f"Text report saved: {text_path}")
 
-    logger.info(f"Reports saved: {text_path}, {html_path}")
-
-    # Print the text summary to stdout - this is what the trigger will capture
+    # Print the text summary
     print("\n" + text_summary)
 
-    # Print a short status line for the trigger
-    if not df.empty:
-        advancing = len(df[df["daily_change_pct"] > 0])
-        declining = len(df[df["daily_change_pct"] < 0])
-        avg_change = df["daily_change_pct"].mean()
-        print(f"\nSTATUS: {advancing} advancing, {declining} declining, "
-              f"avg change {avg_change:+.2f}%")
+    # Summary status
+    print(f"\nSESSION: {session_label}")
+    if changes:
+        print(f"CHANGES: {len(changes)} significant changes detected")
+        for c in changes[:10]:
+            print(f"  [{c['type']}] {c['symbol']} @ ${c['price']:.2f}: {c['detail']}")
     else:
-        print("\nSTATUS: No data available")
+        print("CHANGES: No significant changes since last scan")
+
+    # Desktop notification
+    use_notify = args.notify or config.get("market_monitor", {}).get("desktop_notifications", False)
+    if use_notify:
+        if changes:
+            body = f"{len(changes)} changes detected. Top: " + ", ".join(
+                c["symbol"] for c in changes[:5]
+            )
+            send_desktop_notification("IBKR Market Monitor", body)
+        elif config.get("market_monitor", {}).get("notify_always", False):
+            send_desktop_notification("IBKR Market Monitor", f"{session_label} complete — no changes.")
 
 
 if __name__ == "__main__":
