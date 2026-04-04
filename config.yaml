@@ -140,37 +140,44 @@ schedule:
   after_hours_report: "16:30"
 
 # --- Market Monitor ---
-# Scans top 100 NYSE stocks multiple times per trading day
+# Standalone weekday daemon: scans top 100 NYSE stocks multiple times per day
 # Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+# Run with: python scheduled_monitor.py
 market_monitor:
   enabled: true
-  top_n_report: 100
-  scan_times:              # ET timezone, weekdays only
-    - "08:30"              # Pre-market overview
-    - "10:00"              # Post-open analysis
-    - "12:00"              # Midday check
-    - "14:00"              # Afternoon update
-    - "15:45"              # End-of-day summary
-  # Alert thresholds
-  rsi_overbought: 70
-  rsi_oversold: 30
-  iv_rank_high: 70
+  symbols_count: 100          # Top N NYSE stocks to track
+  scan_times:                 # ET timezone, weekdays only
+    - "08:30"                 # Pre-market overview
+    - "10:00"                 # Post-open analysis
+    - "12:00"                 # Midday check
+    - "14:00"                 # Afternoon update
+    - "15:45"                 # End-of-day closing summary
+  notify_on_changes: true     # Send notification when significant changes detected
+  notify_always: false        # Send notification on every scan (even no changes)
+  notify_full_summary: true   # Include full text summary in notifications
+  change_thresholds:
+    price_move_pct: 3.0       # Flag moves > 3%
+    iv_rank_high: 70          # Flag IV rank above this
+    iv_rank_low: 20           # Flag IV rank below this
+    rsi_overbought: 70
+    rsi_oversold: 30
   macd_crossover_notify: true
   sma_crossover_notify: true
 
 # --- Notifications ---
+# Configure Telegram and/or email to receive market monitor alerts
 notifications:
-  enabled: false
-  method: "telegram"
+  enabled: false              # Set to true to enable notifications
+  method: "telegram"          # "telegram", "email", or "both"
   telegram:
-    bot_token: ""
-    chat_id: ""
+    bot_token: ""             # BotFather token: talk to @BotFather on Telegram
+    chat_id: ""               # Your chat ID: talk to @userinfobot
   email:
-    smtp_server: ""
+    smtp_server: ""           # e.g. "smtp.gmail.com"
     smtp_port: 587
-    sender: ""
-    password: ""
-    recipient: ""
+    sender: ""                # e.g. "you@gmail.com"
+    password: ""              # App password (not your real password)
+    recipient: ""             # e.g. "you@gmail.com"
   alert_on:
     - fills
     - hedge_triggers
@@ -188,24 +195,6 @@ reporting:
   log_max_bytes: 10_000_000
   log_backup_count: 5
   html_report_template: "templates/daily_report.html"
-
-# --- Market Monitor ---
-market_monitor:
-  enabled: true
-  symbols_count: 100        # Top N NYSE stocks to track
-  scan_times:               # Multiple scans per day (ET)
-    - "09:15"               # Pre-market / early morning
-    - "11:30"               # Late morning
-    - "14:00"               # Early afternoon
-    - "15:45"               # Near close
-  notify_on_changes: true   # Email when significant changes detected
-  notify_always: false      # Email every scan even without changes
-  change_thresholds:
-    price_move_pct: 3.0     # Flag moves > 3%
-    iv_rank_high: 70        # Flag IV rank above this
-    iv_rank_low: 20         # Flag IV rank below this
-    rsi_overbought: 70
-    rsi_oversold: 30
 
 # --- Dashboard ---
 dashboard:
