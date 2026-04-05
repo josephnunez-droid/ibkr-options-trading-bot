@@ -140,29 +140,42 @@ schedule:
   after_hours_report: "16:30"
 
 # --- Market Monitor ---
-# Standalone weekday daemon: scans top 100 NYSE stocks multiple times per day
+# Active weekday daemon: dynamically discovers top 100 NYSE performers
+# and scans 8 times per day with full technical + options analysis.
 # Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
 # Run with: python scheduled_monitor.py
 market_monitor:
   enabled: true
   symbols_count: 100          # Top N NYSE stocks to track
-  scan_times:                 # ET timezone, weekdays only
-    - "08:30"                 # Pre-market overview
+  dynamic_discovery: true     # Dynamically find top performers (vs static list)
+  scan_times:                 # ET timezone, weekdays only (8 sessions)
+    - "07:00"                 # Pre-market morning briefing (always notifies)
+    - "09:15"                 # Market open snapshot
     - "10:00"                 # Post-open analysis
-    - "12:00"                 # Midday check
+    - "11:30"                 # Late morning update
+    - "12:30"                 # Midday check
     - "14:00"                 # Afternoon update
-    - "15:45"                 # End-of-day closing summary
+    - "15:00"                 # Power hour alert
+    - "15:50"                 # End-of-day summary (always notifies)
+  briefing_times:             # These scans always send full notification
+    - "07:00"                 # Morning briefing
+    - "15:50"                 # EOD summary
   notify_on_changes: true     # Send notification when significant changes detected
   notify_always: false        # Send notification on every scan (even no changes)
   notify_full_summary: true   # Include full text summary in notifications
+  options_analysis: true      # Fetch real options chain Greeks from yfinance
+  options_dte_min: 25         # Min DTE for options chain lookup
+  options_dte_max: 45         # Max DTE for options chain lookup
   change_thresholds:
     price_move_pct: 3.0       # Flag moves > 3%
     iv_rank_high: 70          # Flag IV rank above this
     iv_rank_low: 20           # Flag IV rank below this
     rsi_overbought: 70
     rsi_oversold: 30
+    volume_surge_ratio: 2.0   # Flag unusual volume > 2x average
   macd_crossover_notify: true
   sma_crossover_notify: true
+  ma_crossover_notify: true   # Golden cross / death cross (50/200)
 
 # --- Notifications ---
 # Configure Telegram and/or email to receive market monitor alerts
