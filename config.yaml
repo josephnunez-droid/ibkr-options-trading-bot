@@ -142,19 +142,42 @@ schedule:
 # --- Market Monitor ---
 # Standalone weekday daemon: scans top 100 NYSE stocks multiple times per day
 # Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+# Dynamically discovers the best-performing stocks via the NYSEScreener
 # Run with: python scheduled_monitor.py
 market_monitor:
   enabled: true
   symbols_count: 100          # Top N NYSE stocks to track
+
+  # Dynamic screening: auto-discover the top 100 best performers
+  # instead of using a static list. Screens ~300+ NYSE stocks by
+  # momentum, volume surge, and IV rank to find the hottest names.
+  dynamic_screening: true     # Set false to use the static fallback list
+  screener_cache_hours: 4     # Cache screener results for this many hours
+  screener_threads: 8         # Parallel threads for screening
+
+  # Morning briefing — ALWAYS sends notification, refreshes the screener
+  morning_briefing_time: "07:00"
+
+  # Intraday scan times — sends notification only on significant changes
   scan_times:                 # ET timezone, weekdays only
-    - "08:30"                 # Pre-market overview
-    - "10:00"                 # Post-open analysis
-    - "12:00"                 # Midday check
-    - "14:00"                 # Afternoon update
+    - "09:35"                 # Post-open snapshot (5 min after bell)
+    - "10:30"                 # Mid-morning check
+    - "12:00"                 # Midday analysis
+    - "13:30"                 # Early afternoon
+    - "14:30"                 # Late afternoon check
     - "15:45"                 # End-of-day closing summary
+
+  # Screener refresh times — re-discover top performers mid-day
+  screener_refresh_times:
+    - "09:30"                 # Refresh at open to catch gap movers
+    - "13:00"                 # Refresh at midday for afternoon session
+
+  # Notification behavior
   notify_on_changes: true     # Send notification when significant changes detected
   notify_always: false        # Send notification on every scan (even no changes)
   notify_full_summary: true   # Include full text summary in notifications
+
+  # Change detection thresholds
   change_thresholds:
     price_move_pct: 3.0       # Flag moves > 3%
     iv_rank_high: 70          # Flag IV rank above this

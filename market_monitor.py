@@ -2,6 +2,7 @@
 Market Monitor: Tracks top 100 NYSE stocks with full technical analysis.
 
 Analyzes: Greeks, IV Rank, 20/50/200 day MA, RSI, MACD, Stochastics
+Dynamically discovers the best-performing NYSE stocks via the NYSEScreener.
 Generates summaries and detects significant changes for notifications.
 """
 
@@ -15,33 +16,26 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from nyse_screener import NYSEScreener
+
 logger = logging.getLogger(__name__)
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
-# Top 100 NYSE-listed large-cap stocks to monitor
-NYSE_TOP_100 = [
-    # Mega-cap tech (NYSE-listed)
+# Fallback static list — used only if the dynamic screener fails entirely
+NYSE_FALLBACK_100 = [
     "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA",
     "BRK-B", "TSM", "V", "MA", "AVGO", "ORCL", "CRM",
-    # Financials
     "JPM", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW", "AXP", "USB",
     "PNC", "TFC", "COF", "ICE", "CME",
-    # Healthcare
     "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK", "TMO", "ABT", "DHR",
     "BMY", "AMGN", "GILD", "ISRG", "MDT", "SYK",
-    # Consumer
     "PG", "KO", "PEP", "COST", "WMT", "HD", "MCD", "NKE", "SBUX",
     "TGT", "LOW", "EL", "CL", "GIS",
-    # Industrial
     "CAT", "DE", "HON", "UPS", "RTX", "BA", "GE", "LMT", "MMM",
     "UNP", "FDX", "EMR",
-    # Energy
     "XOM", "CVX", "COP", "SLB", "EOG", "MPC", "PSX", "VLO", "OXY",
-    # Tech / Semis
     "AMD", "INTC", "QCOM", "TXN", "MU", "AMAT", "LRCX", "SNPS", "CDNS",
-    # Communication / Media
     "DIS", "NFLX", "CMCSA", "T", "VZ",
-    # REITs / Utilities / Other
     "NEE", "DUK", "SO", "D", "SRE",
     "AMT", "PLD", "CCI", "SPG",
     "PLTR", "UBER", "SQ", "COIN", "CRWD", "PANW",
@@ -58,7 +52,33 @@ class MarketMonitor:
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         self._state_file = self.reports_dir / "monitor_state.json"
         self._previous_state = self._load_state()
-        self._symbols = NYSE_TOP_100[:100]
+        self._screener = NYSEScreener(config, reports_dir)
+        self._symbols = self._build_symbol_list()
+
+    def _build_symbol_list(self) -> List[str]:
+        """Build the monitored symbol list using the dynamic screener."""
+        use_dynamic = self.monitor_cfg.get("dynamic_screening", True)
+        if use_dynamic:
+            try:
+                symbols = self._screener.get_top_100()
+                if symbols and len(symbols) >= 20:
+                    logger.info(
+                        f"Dynamic screener provided {len(symbols)} symbols"
+                    )
+                    return symbols[:100]
+            except Exception as e:
+                logger.warning(f"Dynamic screener failed, using fallback: {e}")
+        return NYSE_FALLBACK_100[:100]
+
+    def refresh_symbols(self, force: bool = False):
+        """Re-run the screener to update the monitored symbol list."""
+        try:
+            symbols = self._screener.get_top_100(force_refresh=force)
+            if symbols and len(symbols) >= 20:
+                self._symbols = symbols[:100]
+                logger.info(f"Symbol list refreshed: {len(self._symbols)} stocks")
+        except Exception as e:
+            logger.warning(f"Symbol refresh failed: {e}")
 
     # ---- Technical Indicator Calculations ----
 
@@ -176,18 +196,10 @@ class MarketMonitor:
                 else:
                     trend = "MODERATELY BEARISH"
 
-            # Options Greeks (ATM approximation using IV)
+            # Options Greeks — try real chain data, fall back to estimates
             returns = np.log(close / close.shift(1)).dropna()
             hv_20 = float(returns.tail(20).std() * np.sqrt(252)) if len(returns) >= 20 else 0.2
-            # Simplified ATM greeks estimate
-            greeks = {
-                "est_delta_call": 0.50,
-                "est_delta_put": -0.50,
-                "est_gamma": round(1 / (price * hv_20 * np.sqrt(30 / 365)), 6) if hv_20 > 0 else 0,
-                "est_theta_daily": round(-price * hv_20 / (2 * np.sqrt(365)), 2),
-                "est_vega": round(price * np.sqrt(30 / 365) * 0.01, 2),
-                "hv_20": round(hv_20 * 100, 2),
-            }
+            greeks = self._get_options_greeks(tk, price, hv_20)
 
             # Signal flags
             signals = []
@@ -233,6 +245,119 @@ class MarketMonitor:
         except Exception as e:
             logger.warning(f"Analysis failed for {symbol}: {e}")
             return None
+
+    def _get_options_greeks(self, tk, price: float, hv_20: float) -> Dict:
+        """
+        Attempt to pull real options chain Greeks from yfinance.
+        Falls back to BSM estimates if chain data is unavailable.
+        """
+        try:
+            expirations = tk.options
+            if expirations:
+                # Pick the nearest expiration ~30 days out
+                target_date = datetime.now() + timedelta(days=30)
+                best_exp = min(
+                    expirations,
+                    key=lambda x: abs(
+                        (datetime.strptime(x, "%Y-%m-%d") - target_date).days
+                    ),
+                )
+                chain = tk.option_chain(best_exp)
+                calls = chain.calls
+                puts = chain.puts
+
+                if not calls.empty:
+                    # Find ATM call (strike closest to current price)
+                    calls = calls.copy()
+                    calls["dist"] = abs(calls["strike"] - price)
+                    atm_call = calls.loc[calls["dist"].idxmin()]
+
+                    # Find ATM put
+                    puts = puts.copy()
+                    puts["dist"] = abs(puts["strike"] - price)
+                    atm_put = puts.loc[puts["dist"].idxmin()]
+
+                    # Extract implied volatility from chain
+                    call_iv = float(atm_call.get("impliedVolatility", 0)) * 100
+                    put_iv = float(atm_put.get("impliedVolatility", 0)) * 100
+                    avg_iv = (call_iv + put_iv) / 2 if (call_iv + put_iv) > 0 else hv_20 * 100
+
+                    # Real bid/ask data
+                    call_bid = float(atm_call.get("bid", 0))
+                    call_ask = float(atm_call.get("ask", 0))
+                    call_mid = (call_bid + call_ask) / 2 if call_ask > 0 else float(atm_call.get("lastPrice", 0))
+                    put_bid = float(atm_put.get("bid", 0))
+                    put_ask = float(atm_put.get("ask", 0))
+                    put_mid = (put_bid + put_ask) / 2 if put_ask > 0 else float(atm_put.get("lastPrice", 0))
+
+                    # Options volume & open interest
+                    call_volume = int(atm_call.get("volume", 0) or 0)
+                    put_volume = int(atm_put.get("volume", 0) or 0)
+                    call_oi = int(atm_call.get("openInterest", 0) or 0)
+                    put_oi = int(atm_put.get("openInterest", 0) or 0)
+                    pcr = put_oi / call_oi if call_oi > 0 else 0
+
+                    # BSM estimates using chain IV
+                    sigma = avg_iv / 100
+                    t = 30 / 365
+                    sqrt_t = np.sqrt(t)
+
+                    return {
+                        "source": "chain",
+                        "expiration": best_exp,
+                        "atm_strike": float(atm_call["strike"]),
+                        "call_iv": round(call_iv, 2),
+                        "put_iv": round(put_iv, 2),
+                        "avg_iv": round(avg_iv, 2),
+                        "call_mid": round(call_mid, 2),
+                        "put_mid": round(put_mid, 2),
+                        "call_volume": call_volume,
+                        "put_volume": put_volume,
+                        "call_oi": call_oi,
+                        "put_oi": put_oi,
+                        "put_call_ratio": round(pcr, 2),
+                        "est_delta_call": 0.50,
+                        "est_delta_put": -0.50,
+                        "est_gamma": round(
+                            1 / (price * sigma * sqrt_t), 6
+                        ) if sigma > 0 else 0,
+                        "est_theta_daily": round(
+                            -price * sigma / (2 * np.sqrt(365)), 2
+                        ),
+                        "est_vega": round(price * sqrt_t * 0.01, 2),
+                        "hv_20": round(hv_20 * 100, 2),
+                    }
+        except Exception as e:
+            logger.debug(f"Options chain fetch failed: {e}")
+
+        # Fallback: BSM estimates from historical volatility
+        sigma = hv_20
+        sqrt_t = np.sqrt(30 / 365)
+        return {
+            "source": "estimated",
+            "expiration": None,
+            "atm_strike": round(price, 2),
+            "call_iv": round(hv_20 * 100, 2),
+            "put_iv": round(hv_20 * 100, 2),
+            "avg_iv": round(hv_20 * 100, 2),
+            "call_mid": None,
+            "put_mid": None,
+            "call_volume": 0,
+            "put_volume": 0,
+            "call_oi": 0,
+            "put_oi": 0,
+            "put_call_ratio": 0,
+            "est_delta_call": 0.50,
+            "est_delta_put": -0.50,
+            "est_gamma": round(
+                1 / (price * sigma * sqrt_t), 6
+            ) if sigma > 0 else 0,
+            "est_theta_daily": round(
+                -price * sigma / (2 * np.sqrt(365)), 2
+            ),
+            "est_vega": round(price * sqrt_t * 0.01, 2),
+            "hv_20": round(hv_20 * 100, 2),
+        }
 
     def run_full_scan(self) -> List[Dict]:
         """Analyze all 100 symbols and return sorted results."""
@@ -418,19 +543,51 @@ class MarketMonitor:
                 lines.append(f"  [{c['type']}] {c['symbol']} @ ${c['price']:.2f}: {c['detail']}")
             lines.append("")
 
-        # Full Greeks summary for top 20
-        lines.append("--- OPTIONS GREEKS ESTIMATES (Top 20 by IV) ---")
+        # Full Greeks & Options summary for top 20
+        lines.append("--- OPTIONS ANALYSIS (Top 20 by IV) ---")
         by_iv = sorted(results, key=lambda x: x["iv_rank"], reverse=True)
         for s in by_iv[:20]:
             g = s["greeks"]
+            chain_info = ""
+            if g.get("source") == "chain":
+                chain_info = (
+                    f" CallIV:{g['call_iv']:.0f}% PutIV:{g['put_iv']:.0f}%"
+                    f" P/C:{g['put_call_ratio']:.2f}"
+                    f" CallMid:${g['call_mid']:.2f}" if g.get('call_mid') else ""
+                )
             lines.append(
                 f"  {s['symbol']:6s} IV:{s['iv_rank']:5.1f} "
                 f"HV20:{g['hv_20']:5.1f}% "
                 f"Gamma:{g['est_gamma']:.6f} "
                 f"Theta:{g['est_theta_daily']:>7.2f} "
                 f"Vega:{g['est_vega']:>6.2f}"
+                f"{chain_info}"
             )
         lines.append("")
+
+        # Put/Call ratio analysis
+        chain_stocks = [s for s in results if s["greeks"].get("source") == "chain"]
+        if chain_stocks:
+            high_pcr = [s for s in chain_stocks if s["greeks"]["put_call_ratio"] > 1.5]
+            low_pcr = [s for s in chain_stocks if 0 < s["greeks"]["put_call_ratio"] < 0.5]
+            if high_pcr:
+                lines.append(f"--- HIGH PUT/CALL RATIO (>1.5) — Bearish Sentiment ---")
+                for s in sorted(high_pcr, key=lambda x: x["greeks"]["put_call_ratio"], reverse=True)[:10]:
+                    g = s["greeks"]
+                    lines.append(
+                        f"  {s['symbol']:6s} P/C:{g['put_call_ratio']:.2f} "
+                        f"PutOI:{g['put_oi']:,} CallOI:{g['call_oi']:,}"
+                    )
+                lines.append("")
+            if low_pcr:
+                lines.append(f"--- LOW PUT/CALL RATIO (<0.5) — Bullish Sentiment ---")
+                for s in sorted(low_pcr, key=lambda x: x["greeks"]["put_call_ratio"])[:10]:
+                    g = s["greeks"]
+                    lines.append(
+                        f"  {s['symbol']:6s} P/C:{g['put_call_ratio']:.2f} "
+                        f"PutOI:{g['put_oi']:,} CallOI:{g['call_oi']:,}"
+                    )
+                lines.append("")
 
         lines.append("=== END MARKET MONITOR ===")
         return "\n".join(lines)
@@ -443,6 +600,9 @@ class MarketMonitor:
         top_rows = ""
         for s in results[:25]:
             change_color = "color:#00e676" if s["daily_change_pct"] >= 0 else "color:#ff5252"
+            g = s["greeks"]
+            call_iv = f"{g.get('call_iv', 0):.0f}%" if g.get("source") == "chain" else f"{g.get('hv_20', 0):.0f}%*"
+            pcr = f"{g.get('put_call_ratio', 0):.2f}" if g.get("source") == "chain" else "-"
             top_rows += f"""<tr>
                 <td>{s['symbol']}</td>
                 <td>${s['price']:.2f}</td>
@@ -454,8 +614,9 @@ class MarketMonitor:
                 <td>{s['ma_200'] or '-'}</td>
                 <td>{s['macd']['histogram']:+.4f}</td>
                 <td>{s['stochastic']['k']:.0f}/{s['stochastic']['d']:.0f}</td>
-                <td>{s['greeks']['hv_20']:.1f}%</td>
-                <td>{s['greeks']['est_theta_daily']:.2f}</td>
+                <td>{call_iv}</td>
+                <td>{g['est_theta_daily']:.2f}</td>
+                <td>{pcr}</td>
                 <td>{s['trend']}</td>
                 <td>{', '.join(s['signals']) or '-'}</td>
             </tr>"""
@@ -519,7 +680,7 @@ class MarketMonitor:
         <tr>
             <th>Symbol</th><th>Price</th><th>Change</th><th>RSI</th><th>IV Rank</th>
             <th>MA20</th><th>MA50</th><th>MA200</th><th>MACD Hist</th>
-            <th>Stoch K/D</th><th>HV20</th><th>Theta</th><th>Trend</th><th>Signals</th>
+            <th>Stoch K/D</th><th>IV</th><th>Theta</th><th>P/C</th><th>Trend</th><th>Signals</th>
         </tr>
         {top_rows}
     </table>

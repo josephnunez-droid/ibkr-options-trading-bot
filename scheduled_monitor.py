@@ -34,6 +34,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from market_monitor import MarketMonitor
+from nyse_screener import NYSEScreener
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -225,13 +226,22 @@ def run_scan_and_notify(config: dict, session_label: str = ""):
 # ---------------------------------------------------------------------------
 
 SCAN_SESSION_LABELS = {
+    "07:00": "Morning Briefing (Pre-Market)",
     "08:30": "Pre-Market Overview",
     "09:15": "Early Morning Scan",
+    "09:35": "Post-Open Snapshot",
     "10:00": "Post-Open Analysis",
+    "10:30": "Mid-Morning Check",
+    "11:00": "Late Morning Scan",
     "11:30": "Late Morning Update",
     "12:00": "Midday Analysis",
+    "13:00": "Early Afternoon",
     "14:00": "Afternoon Update",
+    "14:30": "Late Afternoon Check",
+    "15:00": "Power Hour Start",
+    "15:30": "Power Hour",
     "15:45": "End-of-Day Summary",
+    "16:05": "After-Close Recap",
     "16:15": "After-Hours Review",
 }
 
@@ -242,19 +252,105 @@ def get_session_label(time_str: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Morning briefing — always sends, includes screener refresh
+# ---------------------------------------------------------------------------
+
+def run_morning_briefing(config: dict):
+    """
+    Run a comprehensive morning briefing that:
+    1. Refreshes the dynamic screener (finds today's top 100)
+    2. Runs a full technical scan
+    3. ALWAYS sends the notification (regardless of changes)
+    """
+    reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
+    monitor = MarketMonitor(config, reports_dir)
+
+    logger.info("=" * 60)
+    logger.info("MORNING BRIEFING — Refreshing top 100 screener + full scan")
+    logger.info("=" * 60)
+
+    # Force-refresh the screener to pick up overnight movers
+    monitor.refresh_symbols(force=True)
+
+    text_summary, html_report, changes = monitor.run_scan_and_report()
+
+    # Save reports
+    session_dir = Path(reports_dir) / "monitor"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    (session_dir / f"briefing_{ts}.txt").write_text(text_summary)
+    (session_dir / f"briefing_{ts}.html").write_text(html_report)
+
+    logger.info(f"Morning briefing complete — {len(changes)} changes from prior")
+    for line in text_summary.split("\n")[:20]:
+        if line.strip():
+            logger.info(line)
+
+    # Morning briefing ALWAYS notifies
+    now = datetime.now().strftime("%H:%M ET")
+    header = (
+        "<b>MORNING BRIEFING — Daily Market Overview</b>\n"
+        f"Top 100 NYSE stocks refreshed & analyzed\n"
+        f"Changes from prior session: {len(changes)}\n\n"
+    )
+    notify_text = header + text_summary
+    subject = f"Morning Briefing: Top 100 NYSE Analysis — {now}"
+    notify(config, subject, notify_text, html_report)
+
+    return text_summary, changes
+
+
+def run_screener_refresh(config: dict):
+    """Periodic screener refresh to catch intraday movers."""
+    try:
+        reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
+        screener = NYSEScreener(config, reports_dir)
+        symbols = screener.get_top_100(force_refresh=True)
+        logger.info(f"Screener refreshed: {len(symbols)} stocks for next scan")
+    except Exception as e:
+        logger.error(f"Screener refresh failed: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 
 def start_scheduled(config: dict):
-    """Start the APScheduler daemon with all configured scan times."""
+    """Start the APScheduler daemon with morning briefing + intraday scans."""
     tz = config.get("schedule", {}).get("timezone", "US/Eastern")
     mon_cfg = config.get("market_monitor", {})
+
+    # Morning briefing time (always-notify, includes screener refresh)
+    briefing_time = mon_cfg.get("morning_briefing_time", "07:00")
+
+    # Intraday scan times
     scan_times = mon_cfg.get("scan_times", [
-        "08:30", "10:00", "12:00", "14:00", "15:45",
+        "09:35", "10:30", "12:00", "13:30", "14:30", "15:45",
+    ])
+
+    # Screener refresh times (re-discover top performers mid-day)
+    screener_refresh_times = mon_cfg.get("screener_refresh_times", [
+        "09:30", "13:00",
     ])
 
     scheduler = BlockingScheduler()
 
+    # 1. Morning briefing — always sends notification
+    bh, bm = briefing_time.split(":")
+    scheduler.add_job(
+        run_morning_briefing,
+        CronTrigger(
+            hour=int(bh), minute=int(bm),
+            day_of_week="mon-fri",
+            timezone=tz,
+        ),
+        args=[config],
+        id="morning_briefing",
+        name="morning_briefing",
+    )
+    logger.info(f"Scheduled: Morning Briefing at {briefing_time} ET (Mon-Fri)")
+
+    # 2. Intraday scans
     for i, time_str in enumerate(scan_times):
         h, m = time_str.split(":")
         label = get_session_label(time_str)
@@ -272,12 +368,32 @@ def start_scheduled(config: dict):
         )
         logger.info(f"Scheduled: {label} at {time_str} ET (Mon-Fri)")
 
+    # 3. Screener refreshes — update the top 100 list mid-day
+    for i, time_str in enumerate(screener_refresh_times):
+        h, m = time_str.split(":")
+        scheduler.add_job(
+            run_screener_refresh,
+            CronTrigger(
+                hour=int(h), minute=int(m),
+                day_of_week="mon-fri",
+                timezone=tz,
+            ),
+            args=[config],
+            id=f"screener_refresh_{i}",
+            name=f"screener_refresh_{time_str}",
+        )
+        logger.info(f"Scheduled: Screener Refresh at {time_str} ET (Mon-Fri)")
+
+    total_jobs = 1 + len(scan_times)  # briefing + scans
     logger.info("")
     logger.info("=" * 60)
     logger.info("MARKET MONITOR DAEMON RUNNING")
-    logger.info(f"  Scans per day: {len(scan_times)}")
+    logger.info(f"  Morning Briefing: {briefing_time} ET (always notifies)")
+    logger.info(f"  Intraday Scans: {len(scan_times)} per day")
     logger.info(f"  Schedule: {', '.join(scan_times)} ET")
+    logger.info(f"  Screener Refresh: {', '.join(screener_refresh_times)} ET")
     logger.info(f"  Days: Monday - Friday")
+    logger.info(f"  Total daily jobs: {total_jobs}")
     notify_cfg = config.get("notifications", {})
     if notify_cfg.get("enabled"):
         logger.info(f"  Notifications: {notify_cfg.get('method', 'telegram')}")
