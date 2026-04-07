@@ -1,0 +1,42 @@
+# Systemd service for the IBKR Market Monitor daemon
+# Runs the top-100 NYSE stock scanner on weekday schedules with notifications.
+#
+# Installation:
+#   1. Edit the paths below to match your setup
+#   2. Copy to systemd:
+#      sudo cp market-monitor.service /etc/systemd/system/
+#   3. Enable and start:
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable market-monitor
+#      sudo systemctl start market-monitor
+#   4. Check status:
+#      sudo systemctl status market-monitor
+#      journalctl -u market-monitor -f
+#
+# The daemon will auto-start on boot and restart on failure.
+
+[Unit]
+Description=IBKR Market Monitor — Top 100 NYSE Stock Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/user/ibkr-options-trading-bot
+ExecStart=/usr/bin/python3 scheduled_monitor.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/home/user/ibkr-options-trading-bot/logs/market_monitor_service.log
+StandardError=append:/home/user/ibkr-options-trading-bot/logs/market_monitor_service.log
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/user/ibkr-options-trading-bot
+
+[Install]
+WantedBy=multi-user.target

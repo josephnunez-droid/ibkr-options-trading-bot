@@ -140,20 +140,30 @@ schedule:
   after_hours_report: "16:30"
 
 # --- Market Monitor ---
-# Standalone weekday daemon: scans top 100 NYSE stocks multiple times per day
-# Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+# Active market surveillance daemon: dynamically screens 300+ NYSE stocks
+# to find top 100 best performers, then runs full technical + options analysis.
+# Analyzes: Greeks (Delta/Gamma/Theta/Vega), IV Rank, 20/50/200 SMA,
+#           RSI, MACD, Stochastics, Put/Call ratios, Options chains
 # Run with: python scheduled_monitor.py
 market_monitor:
   enabled: true
-  symbols_count: 100          # Top N NYSE stocks to track
+  symbols_count: 100          # Top N performers to track (from 300+ universe)
+  max_workers: 8              # Parallel threads for data fetching
+  fetch_options_greeks: true  # Fetch real options chain Greeks (slower but accurate)
   scan_times:                 # ET timezone, weekdays only
-    - "08:30"                 # Pre-market overview
-    - "10:00"                 # Post-open analysis
-    - "12:00"                 # Midday check
-    - "14:00"                 # Afternoon update
-    - "15:45"                 # End-of-day closing summary
+    - "07:30"                 # Morning briefing (pre-market, full rescreen)
+    - "09:35"                 # Post-open analysis (rescreen after open)
+    - "10:30"                 # Mid-morning update
+    - "12:00"                 # Midday check (rescreen)
+    - "13:30"                 # Early afternoon
+    - "15:45"                 # End-of-day closing summary (rescreen)
+  rescreen_times:             # Sessions that re-rank the full 300+ universe
+    - "07:30"
+    - "09:35"
+    - "12:00"
+    - "15:45"
   notify_on_changes: true     # Send notification when significant changes detected
-  notify_always: false        # Send notification on every scan (even no changes)
+  notify_always: true         # Send notification on every scan (morning briefing)
   notify_full_summary: true   # Include full text summary in notifications
   change_thresholds:
     price_move_pct: 3.0       # Flag moves > 3%
@@ -163,6 +173,10 @@ market_monitor:
     rsi_oversold: 30
   macd_crossover_notify: true
   sma_crossover_notify: true
+  options_alerts:             # Options-specific alert triggers
+    high_put_call_ratio: 1.5  # Alert when P/C ratio exceeds this
+    extreme_iv: 80            # Alert when call/put IV exceeds this %
+    premium_sell_iv_min: 50   # Minimum IV rank for premium selling candidates
 
 # --- Notifications ---
 # Configure Telegram and/or email to receive market monitor alerts

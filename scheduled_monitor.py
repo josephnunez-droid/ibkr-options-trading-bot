@@ -161,16 +161,27 @@ def notify(config: dict, subject: str, text_body: str, html_body: str = None):
 # Scan + notify
 # ---------------------------------------------------------------------------
 
-def run_scan_and_notify(config: dict, session_label: str = ""):
-    """Run the full market monitor scan and send notifications."""
+def run_scan_and_notify(config: dict, session_label: str = "",
+                        rescreen: bool = False):
+    """Run the full market monitor scan and send notifications.
+
+    Args:
+        config: Application config dict
+        session_label: Human-readable session name
+        rescreen: If True, re-screen the full universe for top performers
+    """
     reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
     monitor = MarketMonitor(config, reports_dir)
 
     logger.info(f"{'=' * 60}")
     logger.info(f"MARKET MONITOR — {session_label or 'Scheduled Scan'}")
+    if rescreen:
+        logger.info("Re-screening universe for top 100 performers...")
     logger.info(f"{'=' * 60}")
 
-    text_summary, html_report, changes = monitor.run_scan_and_report()
+    text_summary, html_report, changes = monitor.run_scan_and_report(
+        session_type=session_label, rescreen=rescreen,
+    )
 
     # Save session-specific reports
     session_dir = Path(reports_dir) / "monitor"
@@ -225,15 +236,22 @@ def run_scan_and_notify(config: dict, session_label: str = ""):
 # ---------------------------------------------------------------------------
 
 SCAN_SESSION_LABELS = {
+    "07:30": "Morning Briefing",
     "08:30": "Pre-Market Overview",
     "09:15": "Early Morning Scan",
-    "10:00": "Post-Open Analysis",
+    "09:35": "Post-Open Analysis",
+    "10:30": "Mid-Morning Update",
     "11:30": "Late Morning Update",
     "12:00": "Midday Analysis",
-    "14:00": "Afternoon Update",
+    "13:30": "Early Afternoon Check",
+    "14:30": "Afternoon Update",
     "15:45": "End-of-Day Summary",
     "16:15": "After-Hours Review",
 }
+
+# Sessions that trigger a full re-screening of the universe
+# to find fresh top 100 performers (slower but comprehensive)
+RESCREEN_SESSIONS = {"07:30", "09:35", "12:00", "15:45"}
 
 
 def get_session_label(time_str: str) -> str:
@@ -250,14 +268,16 @@ def start_scheduled(config: dict):
     tz = config.get("schedule", {}).get("timezone", "US/Eastern")
     mon_cfg = config.get("market_monitor", {})
     scan_times = mon_cfg.get("scan_times", [
-        "08:30", "10:00", "12:00", "14:00", "15:45",
+        "07:30", "09:35", "10:30", "12:00", "13:30", "15:45",
     ])
+    rescreen_times = set(mon_cfg.get("rescreen_times", list(RESCREEN_SESSIONS)))
 
     scheduler = BlockingScheduler()
 
     for i, time_str in enumerate(scan_times):
         h, m = time_str.split(":")
         label = get_session_label(time_str)
+        should_rescreen = time_str in rescreen_times
 
         scheduler.add_job(
             run_scan_and_notify,
@@ -266,11 +286,12 @@ def start_scheduled(config: dict):
                 day_of_week="mon-fri",
                 timezone=tz,
             ),
-            args=[config, label],
+            args=[config, label, should_rescreen],
             id=f"monitor_scan_{i}",
             name=f"market_monitor_{time_str}",
         )
-        logger.info(f"Scheduled: {label} at {time_str} ET (Mon-Fri)")
+        rescreen_tag = " [RESCREEN]" if should_rescreen else ""
+        logger.info(f"Scheduled: {label} at {time_str} ET (Mon-Fri){rescreen_tag}")
 
     logger.info("")
     logger.info("=" * 60)
@@ -313,6 +334,14 @@ def main():
         help="Run one scan immediately and exit",
     )
     parser.add_argument(
+        "--morning", action="store_true",
+        help="Run full morning briefing (re-screens universe) and exit",
+    )
+    parser.add_argument(
+        "--rescreen", action="store_true",
+        help="Force re-screening of the full universe for top 100",
+    )
+    parser.add_argument(
         "--test-notify", action="store_true",
         help="Send a test notification and exit",
     )
@@ -341,8 +370,12 @@ def main():
         logger.info("Done. Check your Telegram / email.")
         return
 
+    if args.morning:
+        run_scan_and_notify(config, "Morning Briefing", rescreen=True)
+        return
+
     if args.once:
-        run_scan_and_notify(config, "Manual Scan")
+        run_scan_and_notify(config, "Manual Scan", rescreen=args.rescreen)
         return
 
     start_scheduled(config)
