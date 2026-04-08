@@ -147,9 +147,8 @@ class TradingBot:
         )
         self.reporter = Reporter(self.config, self.data_feed, self.risk_engine)
 
-        self.market_monitor = MarketMonitor(
-            self.config, self.config.get("reporting", {}).get("reports_dir", "reports")
-        )
+        reports_dir = self.config.get("reporting", {}).get("reports_dir", "reports")
+        self.market_monitor = MarketMonitor(self.config, reports_dir)
 
         account = self.conn.get_account_summary()
         net_liq = account.get("NetLiquidation", 0)
@@ -344,12 +343,21 @@ class TradingBot:
         logger.info("MARKET MONITOR SCAN")
         logger.info("=" * 60)
 
-        monitor = MarketMonitor(self.config, self.config.get("reporting", {}).get("reports_dir", "reports"))
-        text_summary, html_report, changes = monitor.run_scan_and_report()
+        try:
+            text_summary, html_report, changes = self.market_monitor.run_scan_and_report()
+        except Exception as e:
+            logger.error(f"Market monitor scan failed: {e}")
+            if self.reporter:
+                self.reporter.send_alert(
+                    f"Market monitor scan failed: {e}",
+                    level="WARNING",
+                    category="errors",
+                )
+            return "", []
 
         logger.info(f"Market monitor: {len(changes)} changes detected")
 
-        # Always log the summary
+        # Log the summary headline to the trading log
         for line in text_summary.split("\n")[:30]:
             logger.info(line)
 
@@ -360,8 +368,28 @@ class TradingBot:
         )
 
         if should_notify and self.reporter:
-            change_summary = f"Market Monitor: {len(changes)} changes detected" if changes else "Market Monitor: Scheduled scan complete"
-            self.reporter.send_alert(change_summary, level="INFO", category="market_monitor")
+            # Send the full text summary, not just a one-liner
+            if notify_cfg.get("notify_full_summary", True):
+                # Truncate for Telegram (4096 char limit) but keep meaningful content
+                max_len = 4000
+                alert_body = text_summary[:max_len]
+                if len(text_summary) > max_len:
+                    alert_body += "\n... (truncated, see full HTML report)"
+                self.reporter.send_alert(
+                    alert_body, level="INFO", category="market_monitor"
+                )
+            else:
+                headline = (
+                    f"Market Monitor: {len(changes)} changes detected"
+                    if changes
+                    else "Market Monitor: Scheduled scan complete"
+                )
+                self.reporter.send_alert(
+                    headline, level="INFO", category="market_monitor"
+                )
+
+            # Also send the HTML report via email if email is configured
+            self.reporter.send_market_monitor_email(html_report, changes)
 
         return text_summary, changes
 

@@ -313,6 +313,51 @@ class Reporter:
         except Exception as e:
             logger.error(f"Email notification failed: {e}")
 
+    def send_market_monitor_email(self, html_report: str, changes: list):
+        """Send the full HTML market monitor report via email."""
+        if not self.notify_cfg.get("enabled", False):
+            return
+        if self.notify_cfg.get("method") != "email":
+            return
+
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        email_cfg = self.notify_cfg.get("email", {})
+        if not email_cfg.get("smtp_server"):
+            return
+
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            change_count = len(changes) if changes else 0
+            subject = f"Market Monitor Report — {now}"
+            if change_count:
+                subject += f" ({change_count} changes)"
+
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = email_cfg["sender"]
+            msg["To"] = email_cfg["recipient"]
+
+            # Plain text fallback
+            plain = f"Market Monitor Report generated at {now}.\n"
+            plain += f"{change_count} significant changes detected.\n"
+            plain += "Open the HTML version for the full report."
+            msg.attach(MIMEText(plain, "plain"))
+
+            # Full HTML report
+            msg.attach(MIMEText(html_report, "html"))
+
+            with smtplib.SMTP(email_cfg["smtp_server"], email_cfg["smtp_port"]) as server:
+                server.starttls()
+                server.login(email_cfg["sender"], email_cfg["password"])
+                server.send_message(msg)
+
+            logger.info(f"Market monitor email sent to {email_cfg['recipient']}")
+        except Exception as e:
+            logger.error(f"Market monitor email failed: {e}")
+
 
 # --- HTML Report Template ---
 

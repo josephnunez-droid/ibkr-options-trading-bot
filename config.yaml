@@ -139,31 +139,6 @@ schedule:
   power_hour: "15:30"
   after_hours_report: "16:30"
 
-# --- Market Monitor ---
-# Standalone weekday daemon: scans top 100 NYSE stocks multiple times per day
-# Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
-# Run with: python scheduled_monitor.py
-market_monitor:
-  enabled: true
-  symbols_count: 100          # Top N NYSE stocks to track
-  scan_times:                 # ET timezone, weekdays only
-    - "08:30"                 # Pre-market overview
-    - "10:00"                 # Post-open analysis
-    - "12:00"                 # Midday check
-    - "14:00"                 # Afternoon update
-    - "15:45"                 # End-of-day closing summary
-  notify_on_changes: true     # Send notification when significant changes detected
-  notify_always: false        # Send notification on every scan (even no changes)
-  notify_full_summary: true   # Include full text summary in notifications
-  change_thresholds:
-    price_move_pct: 3.0       # Flag moves > 3%
-    iv_rank_high: 70          # Flag IV rank above this
-    iv_rank_low: 20           # Flag IV rank below this
-    rsi_overbought: 70
-    rsi_oversold: 30
-  macd_crossover_notify: true
-  sma_crossover_notify: true
-
 # --- Notifications ---
 # Configure Telegram and/or email to receive market monitor alerts
 notifications:
@@ -195,6 +170,30 @@ reporting:
   log_max_bytes: 10_000_000
   log_backup_count: 5
   html_report_template: "templates/daily_report.html"
+
+# --- Market Monitor ---
+# Scans top 100 NYSE stocks multiple times per trading day
+# Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+market_monitor:
+  enabled: true
+  symbols_count: 100            # Top N NYSE stocks to track
+  scan_times:                   # ET timezone, weekdays only
+    - "08:30"                   # Pre-market overview
+    - "10:30"                   # Morning update
+    - "12:30"                   # Midday analysis
+    - "14:30"                   # Afternoon check
+    - "15:45"                   # Closing summary
+  notify_on_changes: true       # Send notification when significant changes detected
+  notify_always: false          # Send notification every scan even without changes
+  notify_full_summary: true     # Include full text summary in notifications
+  macd_crossover_notify: true
+  sma_crossover_notify: true
+  change_thresholds:
+    price_move_pct: 3.0         # Flag moves > 3%
+    iv_rank_high: 70            # Flag IV rank above this
+    iv_rank_low: 20             # Flag IV rank below this
+    rsi_overbought: 70
+    rsi_oversold: 30
 
 # --- Dashboard ---
 dashboard:

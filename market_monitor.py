@@ -576,6 +576,7 @@ class MarketMonitor:
             (text_summary, html_report, changes)
         """
         results = self.run_full_scan()
+        self._last_results = results  # Cache for callers that need DataFrame
         changes = self.detect_changes(results)
 
         text_summary = self.generate_summary(results, changes)
@@ -593,8 +594,17 @@ class MarketMonitor:
         return text_summary, html_report, changes
 
 
-def run_standalone():
-    """Run the market monitor as a standalone script."""
+def run_scan(session_label: str = "Market Scan", include_options: bool = True) -> tuple:
+    """
+    Module-level convenience function for monitor_runner.py and other callers.
+
+    Args:
+        session_label: Human-readable label for this scan session.
+        include_options: Whether to include options greeks estimates.
+
+    Returns:
+        (df, text_summary, html_report) where df is a pandas DataFrame of results.
+    """
     import yaml
 
     logging.basicConfig(
@@ -612,10 +622,26 @@ def run_standalone():
     monitor = MarketMonitor(config)
     text_summary, html_report, changes = monitor.run_scan_and_report()
 
+    # Prepend session label to the text summary
+    header = f"[{session_label}] — {datetime.now().strftime('%Y-%m-%d %H:%M ET')}\n\n"
+    text_summary = header + text_summary
+
+    # Convert results to DataFrame for callers that need tabular data
+    results = monitor.run_full_scan() if not hasattr(monitor, '_last_results') else monitor._last_results
+    df = pd.DataFrame(results) if results else pd.DataFrame()
+
+    return df, text_summary, html_report
+
+
+def run_standalone():
+    """Run the market monitor as a standalone script."""
+    df, text_summary, html_report = run_scan(session_label="Standalone Scan")
     print(text_summary)
 
-    if changes:
-        print(f"\n[!] {len(changes)} significant changes detected.")
+    if not df.empty:
+        advancing = len(df[df["daily_change_pct"] > 0])
+        declining = len(df[df["daily_change_pct"] < 0])
+        print(f"\n[!] {advancing} advancing, {declining} declining")
 
 
 if __name__ == "__main__":

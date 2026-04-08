@@ -4,6 +4,8 @@ Monitor Runner: Entry point for standalone market monitor scans.
 Runs a full technical analysis scan of the top 100 NYSE stocks using
 the MarketMonitor class. No IBKR connection required (uses yfinance).
 
+Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+
 Usage:
     python monitor_runner.py                          # Run midday scan
     python monitor_runner.py --session pre_market      # Run specific session
@@ -32,9 +34,9 @@ logger = logging.getLogger("monitor_runner")
 
 SESSION_LABELS = {
     "pre_market": "Pre-Market Scan (8:30 AM ET)",
-    "morning": "Morning Update (10:00 AM ET)",
-    "midday": "Midday Analysis (12:00 PM ET)",
-    "afternoon": "Afternoon Check (2:00 PM ET)",
+    "morning": "Morning Update (10:30 AM ET)",
+    "midday": "Midday Analysis (12:30 PM ET)",
+    "afternoon": "Afternoon Check (2:30 PM ET)",
     "closing": "Closing Summary (3:45 PM ET)",
 }
 
