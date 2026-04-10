@@ -172,22 +172,26 @@ reporting:
   html_report_template: "templates/daily_report.html"
 
 # --- Market Monitor ---
-# Scans top 100 NYSE stocks multiple times per trading day
-# Analyzes: Greeks, IV Rank, 20/50/200 SMA, RSI, MACD, Stochastics
+# Dynamically discovers top 100 best-performing NYSE stocks each morning,
+# then scans them multiple times per trading day with full technical analysis.
+# Analyzes: Greeks (live options chains), IV Rank, 20/50/200 SMA, RSI, MACD,
+# Stochastics, put/call ratios, and unusual options activity.
 market_monitor:
   enabled: true
   symbols_count: 100            # Top N NYSE stocks to track
+  max_workers: 8                # Parallel threads for scanning (increase for faster scans)
   scan_times:                   # ET timezone, weekdays only
-    - "08:30"                   # Pre-market overview
-    - "10:30"                   # Morning update
-    - "12:30"                   # Midday analysis
-    - "14:30"                   # Afternoon check
-    - "15:45"                   # Closing summary
+    - "08:00"                   # Morning briefing (refreshes top 100 rankings)
+    - "09:45"                   # Post-open analysis
+    - "11:30"                   # Late-morning update
+    - "13:30"                   # Early afternoon check
+    - "15:45"                   # End-of-day summary
   notify_on_changes: true       # Send notification when significant changes detected
   notify_always: false          # Send notification every scan even without changes
   notify_full_summary: true     # Include full text summary in notifications
   macd_crossover_notify: true
   sma_crossover_notify: true
+  include_options_chains: true  # Fetch live options chain data (ATM Greeks, P/C ratio)
   change_thresholds:
     price_move_pct: 3.0         # Flag moves > 3%
     iv_rank_high: 70            # Flag IV rank above this

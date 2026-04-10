@@ -1,0 +1,38 @@
+# systemd service file for the Market Monitor daemon.
+#
+# Installation:
+#   1. Copy this file to ~/.config/systemd/user/market-monitor.service
+#      (or /etc/systemd/system/market-monitor.service for system-wide)
+#   2. Edit the paths below to match your installation.
+#   3. Enable and start:
+#        systemctl --user daemon-reload
+#        systemctl --user enable market-monitor
+#        systemctl --user start market-monitor
+#   4. Check status:
+#        systemctl --user status market-monitor
+#   5. View logs:
+#        journalctl --user -u market-monitor -f
+
+[Unit]
+Description=IBKR Market Monitor — Top 100 NYSE Stocks (Weekdays)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/ibkr-options-trading-bot
+ExecStart=/usr/bin/python3 scheduled_monitor.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Ensure the process is stopped cleanly
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Environment (uncomment and edit if using a virtualenv)
+# Environment="PATH=/home/user/ibkr-options-trading-bot/venv/bin:/usr/local/bin:/usr/bin"
+
+[Install]
+WantedBy=default.target

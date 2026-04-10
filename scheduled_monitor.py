@@ -161,18 +161,47 @@ def notify(config: dict, subject: str, text_body: str, html_body: str = None):
 # Scan + notify
 # ---------------------------------------------------------------------------
 
-def run_scan_and_notify(config: dict, session_label: str = ""):
-    """Run the full market monitor scan and send notifications."""
-    reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
-    monitor = MarketMonitor(config, reports_dir)
+# Keep a module-level monitor instance so state persists across scans
+_monitor_instance: MarketMonitor = None
+
+
+def _get_monitor(config: dict) -> MarketMonitor:
+    """Get or create the monitor singleton for the session."""
+    global _monitor_instance
+    if _monitor_instance is None:
+        reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
+        _monitor_instance = MarketMonitor(config, reports_dir)
+    return _monitor_instance
+
+
+def run_scan_and_notify(config: dict, session_label: str = "",
+                         is_morning_briefing: bool = False):
+    """Run the full market monitor scan and send notifications.
+
+    Args:
+        config: Application configuration dict.
+        session_label: Human-readable label for this scan.
+        is_morning_briefing: If True, sends the comprehensive morning
+            briefing instead of a standard summary.  Also refreshes
+            the top-100 stock rankings for the day.
+    """
+    monitor = _get_monitor(config)
 
     logger.info(f"{'=' * 60}")
     logger.info(f"MARKET MONITOR — {session_label or 'Scheduled Scan'}")
     logger.info(f"{'=' * 60}")
 
-    text_summary, html_report, changes = monitor.run_scan_and_report()
+    # Refresh top-100 rankings at the start of each trading day
+    if is_morning_briefing:
+        logger.info("Morning briefing — refreshing top 100 rankings...")
+        monitor.refresh_top_100()
+
+    text_summary, html_report, changes = monitor.run_scan_and_report(
+        is_morning_briefing=is_morning_briefing,
+    )
 
     # Save session-specific reports
+    reports_dir = config.get("reporting", {}).get("reports_dir", "reports")
     session_dir = Path(reports_dir) / "monitor"
     session_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M")
@@ -188,7 +217,8 @@ def run_scan_and_notify(config: dict, session_label: str = ""):
     # Decide whether to notify
     mon_cfg = config.get("market_monitor", {})
     should_notify = (
-        mon_cfg.get("notify_always", False)
+        is_morning_briefing  # Always notify for morning briefing
+        or mon_cfg.get("notify_always", False)
         or (mon_cfg.get("notify_on_changes", True) and changes)
     )
 
@@ -197,14 +227,16 @@ def run_scan_and_notify(config: dict, session_label: str = ""):
         change_count = len(changes)
 
         # Build notification text
-        header = f"<b>Market Monitor — {session_label or now}</b>\n"
-        header += f"Changes detected: {change_count}\n\n"
+        if is_morning_briefing:
+            header = f"<b>DAILY MORNING BRIEFING — {datetime.now().strftime('%A, %B %d')}</b>\n"
+            header += f"Top 100 NYSE stocks analyzed\n\n"
+        else:
+            header = f"<b>Market Monitor — {session_label or now}</b>\n"
+            header += f"Changes detected: {change_count}\n\n"
 
         if mon_cfg.get("notify_full_summary", True):
-            # Send the full text summary
             notify_text = header + text_summary
         else:
-            # Send just the changes
             change_lines = []
             for c in changes[:25]:
                 change_lines.append(
@@ -212,7 +244,10 @@ def run_scan_and_notify(config: dict, session_label: str = ""):
                 )
             notify_text = header + "\n".join(change_lines)
 
-        subject = f"Market Monitor: {change_count} changes — {now}"
+        if is_morning_briefing:
+            subject = f"Morning Briefing: Top 100 NYSE — {datetime.now().strftime('%A %m/%d')}"
+        else:
+            subject = f"Market Monitor: {change_count} changes — {now}"
         notify(config, subject, notify_text, html_report)
     else:
         logger.info("No significant changes — notification skipped")
@@ -225,15 +260,24 @@ def run_scan_and_notify(config: dict, session_label: str = ""):
 # ---------------------------------------------------------------------------
 
 SCAN_SESSION_LABELS = {
+    "08:00": "Morning Briefing",
     "08:30": "Pre-Market Overview",
     "09:15": "Early Morning Scan",
-    "10:00": "Post-Open Analysis",
+    "09:45": "Post-Open Analysis",
+    "10:30": "Mid-Morning Update",
     "11:30": "Late Morning Update",
     "12:00": "Midday Analysis",
+    "12:30": "Midday Analysis",
+    "13:30": "Early Afternoon Check",
     "14:00": "Afternoon Update",
+    "14:30": "Afternoon Update",
+    "15:00": "Power Hour Scan",
     "15:45": "End-of-Day Summary",
     "16:15": "After-Hours Review",
 }
+
+# The first scan of the day is always the morning briefing
+MORNING_BRIEFING_TIMES = {"08:00", "08:30"}
 
 
 def get_session_label(time_str: str) -> str:
@@ -246,11 +290,16 @@ def get_session_label(time_str: str) -> str:
 # ---------------------------------------------------------------------------
 
 def start_scheduled(config: dict):
-    """Start the APScheduler daemon with all configured scan times."""
+    """Start the APScheduler daemon with all configured scan times.
+
+    The first scan of the day (typically 08:00 or 08:30) is treated as the
+    *morning briefing* — it refreshes the top-100 rankings and sends a
+    comprehensive overview.  All subsequent scans send incremental updates.
+    """
     tz = config.get("schedule", {}).get("timezone", "US/Eastern")
     mon_cfg = config.get("market_monitor", {})
     scan_times = mon_cfg.get("scan_times", [
-        "08:30", "10:00", "12:00", "14:00", "15:45",
+        "08:00", "09:45", "12:00", "14:00", "15:45",
     ])
 
     scheduler = BlockingScheduler()
@@ -258,6 +307,7 @@ def start_scheduled(config: dict):
     for i, time_str in enumerate(scan_times):
         h, m = time_str.split(":")
         label = get_session_label(time_str)
+        is_morning = time_str in MORNING_BRIEFING_TIMES or i == 0
 
         scheduler.add_job(
             run_scan_and_notify,
@@ -267,10 +317,12 @@ def start_scheduled(config: dict):
                 timezone=tz,
             ),
             args=[config, label],
+            kwargs={"is_morning_briefing": is_morning},
             id=f"monitor_scan_{i}",
             name=f"market_monitor_{time_str}",
         )
-        logger.info(f"Scheduled: {label} at {time_str} ET (Mon-Fri)")
+        tag = " [MORNING BRIEFING]" if is_morning else ""
+        logger.info(f"Scheduled: {label} at {time_str} ET (Mon-Fri){tag}")
 
     logger.info("")
     logger.info("=" * 60)
@@ -278,6 +330,7 @@ def start_scheduled(config: dict):
     logger.info(f"  Scans per day: {len(scan_times)}")
     logger.info(f"  Schedule: {', '.join(scan_times)} ET")
     logger.info(f"  Days: Monday - Friday")
+    logger.info(f"  Morning briefing: {scan_times[0]} ET")
     notify_cfg = config.get("notifications", {})
     if notify_cfg.get("enabled"):
         logger.info(f"  Notifications: {notify_cfg.get('method', 'telegram')}")
@@ -313,6 +366,10 @@ def main():
         help="Run one scan immediately and exit",
     )
     parser.add_argument(
+        "--morning", action="store_true",
+        help="Run the morning briefing scan (refreshes top 100 rankings)",
+    )
+    parser.add_argument(
         "--test-notify", action="store_true",
         help="Send a test notification and exit",
     )
@@ -339,6 +396,10 @@ def main():
         )
         notify(config, "Market Monitor: Test Notification", test_msg)
         logger.info("Done. Check your Telegram / email.")
+        return
+
+    if args.morning:
+        run_scan_and_notify(config, "Morning Briefing", is_morning_briefing=True)
         return
 
     if args.once:
