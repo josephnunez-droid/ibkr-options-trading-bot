@@ -106,7 +106,15 @@ def send_telegram(token: str, chat_id: str, text: str, html: str = None):
 
 
 def send_email(smtp_cfg: dict, subject: str, text_body: str, html_body: str = None):
-    """Send an email notification with optional HTML attachment."""
+    """Send an email notification with optional HTML attachment.
+
+    Supports Gmail SMTP with App Passwords:
+        smtp_server: smtp.gmail.com
+        smtp_port: 587
+        sender: you@gmail.com
+        password: <16-char app password>
+        recipient: you@gmail.com
+    """
     server = smtp_cfg.get("smtp_server", "")
     port = smtp_cfg.get("smtp_port", 587)
     sender = smtp_cfg.get("sender", "")
@@ -120,20 +128,29 @@ def send_email(smtp_cfg: dict, subject: str, text_body: str, html_body: str = No
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"] = sender
+        msg["From"] = f"Market Monitor <{sender}>"
         msg["To"] = recipient
+        msg["X-Priority"] = "2"  # High priority for market alerts
 
         msg.attach(MIMEText(text_body, "plain"))
         if html_body:
             msg.attach(MIMEText(html_body, "html"))
 
         with smtplib.SMTP(server, port, timeout=30) as smtp:
+            smtp.ehlo()
             smtp.starttls()
+            smtp.ehlo()
             smtp.login(sender, password)
             smtp.sendmail(sender, recipient, msg.as_string())
 
         logger.info(f"Email sent to {recipient}")
         return True
+    except smtplib.SMTPAuthenticationError:
+        logger.error(
+            "Email auth failed — if using Gmail, create an App Password at "
+            "https://myaccount.google.com/apppasswords"
+        )
+        return False
     except Exception as e:
         logger.error(f"Email send failed: {e}")
         return False
@@ -229,10 +246,13 @@ def run_scan_and_notify(config: dict, session_label: str = "",
         # Build notification text
         if is_morning_briefing:
             header = f"<b>DAILY MORNING BRIEFING — {datetime.now().strftime('%A, %B %d')}</b>\n"
-            header += f"Top 100 NYSE stocks analyzed\n\n"
+            header += f"Top 100 NYSE stocks analyzed | Greeks, IV, MA, RSI, MACD, Stochastics\n\n"
         else:
             header = f"<b>Market Monitor — {session_label or now}</b>\n"
-            header += f"Changes detected: {change_count}\n\n"
+            if change_count:
+                header += f"{change_count} significant change(s) detected\n\n"
+            else:
+                header += f"Scheduled update — no significant changes\n\n"
 
         if mon_cfg.get("notify_full_summary", True):
             notify_text = header + text_summary
@@ -244,11 +264,22 @@ def run_scan_and_notify(config: dict, session_label: str = "",
                 )
             notify_text = header + "\n".join(change_lines)
 
+        # Build email subject line
         if is_morning_briefing:
-            subject = f"Morning Briefing: Top 100 NYSE — {datetime.now().strftime('%A %m/%d')}"
+            subject = (
+                f"Morning Briefing: Top 100 NYSE — "
+                f"{datetime.now().strftime('%A %m/%d')}"
+            )
+        elif change_count:
+            subject = (
+                f"Market Alert: {change_count} change(s) — "
+                f"{session_label or now}"
+            )
         else:
-            subject = f"Market Monitor: {change_count} changes — {now}"
+            subject = f"Market Update: {session_label or now}"
+
         notify(config, subject, notify_text, html_report)
+        logger.info(f"Notification sent: {subject}")
     else:
         logger.info("No significant changes — notification skipped")
 
@@ -265,9 +296,12 @@ SCAN_SESSION_LABELS = {
     "09:15": "Early Morning Scan",
     "09:45": "Post-Open Analysis",
     "10:30": "Mid-Morning Update",
+    "10:45": "Mid-Morning Update",
     "11:30": "Late Morning Update",
+    "11:45": "Late Morning Update",
     "12:00": "Midday Analysis",
     "12:30": "Midday Analysis",
+    "13:00": "Early Afternoon Check",
     "13:30": "Early Afternoon Check",
     "14:00": "Afternoon Update",
     "14:30": "Afternoon Update",

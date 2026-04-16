@@ -14,7 +14,7 @@
 #        journalctl --user -u market-monitor -f
 
 [Unit]
-Description=IBKR Market Monitor — Top 100 NYSE Stocks (Weekdays)
+Description=IBKR Market Monitor — Top 100 NYSE Stocks (7 scans/day, Mon-Fri)
 After=network-online.target
 Wants=network-online.target
 
@@ -30,6 +30,10 @@ StandardError=journal
 # Ensure the process is stopped cleanly
 KillSignal=SIGTERM
 TimeoutStopSec=10
+
+# Keep the process alive across user sessions
+# (needed for --user services when not logged in)
+LimitNOFILE=4096
 
 # Environment (uncomment and edit if using a virtualenv)
 # Environment="PATH=/home/user/ibkr-options-trading-bot/venv/bin:/usr/local/bin:/usr/bin"

@@ -140,19 +140,26 @@ schedule:
   after_hours_report: "16:30"
 
 # --- Notifications ---
-# Configure Telegram and/or email to receive market monitor alerts
+# Configure Telegram and/or email (Gmail) to receive market monitor alerts.
+#
+# Gmail Setup (recommended):
+#   1. Go to https://myaccount.google.com/apppasswords
+#   2. Generate an "App Password" for "Mail"
+#   3. Paste the 16-char password below (NOT your Gmail password)
+#   4. Set method to "email" or "both"
+#   5. Test with: python scheduled_monitor.py --test-notify
 notifications:
-  enabled: false              # Set to true to enable notifications
-  method: "telegram"          # "telegram", "email", or "both"
+  enabled: true               # Notifications are ON
+  method: "email"             # "telegram", "email", or "both"
   telegram:
     bot_token: ""             # BotFather token: talk to @BotFather on Telegram
     chat_id: ""               # Your chat ID: talk to @userinfobot
   email:
-    smtp_server: ""           # e.g. "smtp.gmail.com"
+    smtp_server: "smtp.gmail.com"
     smtp_port: 587
-    sender: ""                # e.g. "you@gmail.com"
-    password: ""              # App password (not your real password)
-    recipient: ""             # e.g. "you@gmail.com"
+    sender: ""                # YOUR Gmail address, e.g. "you@gmail.com"
+    password: ""              # Gmail App Password (16 chars, no spaces)
+    recipient: ""             # Where to receive alerts, e.g. "you@gmail.com"
   alert_on:
     - fills
     - hedge_triggers
@@ -176,28 +183,36 @@ reporting:
 # then scans them multiple times per trading day with full technical analysis.
 # Analyzes: Greeks (live options chains), IV Rank, 20/50/200 SMA, RSI, MACD,
 # Stochastics, put/call ratios, and unusual options activity.
+#
+# Sends you a MORNING BRIEFING at 08:00 ET each weekday, then incremental
+# updates throughout the day whenever significant changes are detected.
 market_monitor:
   enabled: true
   symbols_count: 100            # Top N NYSE stocks to track
-  max_workers: 8                # Parallel threads for scanning (increase for faster scans)
-  scan_times:                   # ET timezone, weekdays only
+  max_workers: 10               # Parallel threads for scanning (increase for faster scans)
+  scan_times:                   # ET timezone, weekdays only (7 scans/day)
     - "08:00"                   # Morning briefing (refreshes top 100 rankings)
     - "09:45"                   # Post-open analysis
-    - "11:30"                   # Late-morning update
-    - "13:30"                   # Early afternoon check
+    - "10:45"                   # Mid-morning update
+    - "11:45"                   # Late-morning update
+    - "13:00"                   # Early afternoon check
+    - "14:30"                   # Afternoon update
     - "15:45"                   # End-of-day summary
   notify_on_changes: true       # Send notification when significant changes detected
-  notify_always: false          # Send notification every scan even without changes
+  notify_always: true           # Send notification every scan (full summary each time)
   notify_full_summary: true     # Include full text summary in notifications
   macd_crossover_notify: true
   sma_crossover_notify: true
   include_options_chains: true  # Fetch live options chain data (ATM Greeks, P/C ratio)
   change_thresholds:
-    price_move_pct: 3.0         # Flag moves > 3%
-    iv_rank_high: 70            # Flag IV rank above this
-    iv_rank_low: 20             # Flag IV rank below this
+    price_move_pct: 2.0         # Flag moves > 2% (tighter for active monitoring)
+    iv_rank_high: 65            # Flag IV rank above this
+    iv_rank_low: 25             # Flag IV rank below this
     rsi_overbought: 70
     rsi_oversold: 30
+    stoch_overbought: 80
+    stoch_oversold: 20
+    volume_spike_ratio: 2.0     # Flag when volume > 2x average
 
 # --- Dashboard ---
 dashboard:

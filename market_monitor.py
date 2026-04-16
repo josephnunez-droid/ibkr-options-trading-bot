@@ -492,6 +492,8 @@ class MarketMonitor:
                 signals.append("HIGH_IV_RANK")
             elif iv_rank < 20:
                 signals.append("LOW_IV_RANK")
+            if avg_volume > 0 and current_volume / avg_volume >= 2.0:
+                signals.append("VOLUME_SPIKE")
 
             return {
                 "symbol": symbol,
@@ -545,9 +547,17 @@ class MarketMonitor:
         self._symbols = self.discover_top_100()
 
     def detect_changes(self, current: List[Dict]) -> List[Dict]:
-        """Compare current scan to previous state and flag significant changes."""
+        """Compare current scan to previous state and flag significant changes.
+
+        Uses thresholds from config.yaml market_monitor.change_thresholds.
+        """
         changes = []
         prev_map = {s["symbol"]: s for s in self._previous_state}
+        thresholds = self.monitor_cfg.get("change_thresholds", {})
+        price_move_pct = thresholds.get("price_move_pct", 2.0)
+        iv_high = thresholds.get("iv_rank_high", 65)
+        iv_low = thresholds.get("iv_rank_low", 25)
+        vol_spike = thresholds.get("volume_spike_ratio", 2.0)
 
         for stock in current:
             sym = stock["symbol"]
@@ -560,6 +570,7 @@ class MarketMonitor:
                         "type": "NEW_SIGNALS",
                         "detail": f"New signals: {', '.join(stock['signals'])}",
                         "price": stock["price"],
+                        "priority": "MEDIUM",
                     })
                 continue
 
@@ -573,30 +584,44 @@ class MarketMonitor:
                     "type": "SIGNAL_CHANGE",
                     "detail": f"New: {', '.join(added)}",
                     "price": stock["price"],
+                    "priority": "HIGH" if any(
+                        s in added for s in ("RSI_OVERBOUGHT", "RSI_OVERSOLD",
+                                             "MACD_BULLISH", "MACD_BEARISH")
+                    ) else "MEDIUM",
                 })
 
-            # Detect large price moves (>3% since last scan)
+            # Detect large price moves (configurable threshold)
             prev_price = prev.get("price", 0)
             if prev_price > 0:
                 move_pct = abs(stock["price"] - prev_price) / prev_price * 100
-                if move_pct > 3:
+                if move_pct > price_move_pct:
                     direction = "UP" if stock["price"] > prev_price else "DOWN"
                     changes.append({
                         "symbol": sym,
                         "type": "LARGE_MOVE",
                         "detail": f"{direction} {move_pct:.1f}% (${prev_price:.2f} -> ${stock['price']:.2f})",
                         "price": stock["price"],
+                        "priority": "HIGH" if move_pct > 5 else "MEDIUM",
                     })
 
             # Detect IV rank regime change
             prev_iv = prev.get("iv_rank", 50)
             curr_iv = stock["iv_rank"]
-            if (prev_iv < 50 and curr_iv >= 70) or (prev_iv >= 50 and curr_iv < 20):
+            if (prev_iv < iv_high and curr_iv >= iv_high):
                 changes.append({
                     "symbol": sym,
-                    "type": "IV_REGIME_CHANGE",
-                    "detail": f"IV Rank: {prev_iv:.0f} -> {curr_iv:.0f}",
+                    "type": "IV_SPIKE",
+                    "detail": f"IV Rank surged: {prev_iv:.0f} -> {curr_iv:.0f} (sell premium opportunity)",
                     "price": stock["price"],
+                    "priority": "HIGH",
+                })
+            elif (prev_iv >= iv_low and curr_iv < iv_low):
+                changes.append({
+                    "symbol": sym,
+                    "type": "IV_CRUSH",
+                    "detail": f"IV Rank dropped: {prev_iv:.0f} -> {curr_iv:.0f}",
+                    "price": stock["price"],
+                    "priority": "MEDIUM",
                 })
 
             # Detect trend change
@@ -606,19 +631,98 @@ class MarketMonitor:
                     "type": "TREND_CHANGE",
                     "detail": f"Trend: {prev.get('trend', 'N/A')} -> {stock['trend']}",
                     "price": stock["price"],
+                    "priority": "HIGH",
                 })
+
+            # Detect MACD crossover (new this scan)
+            prev_hist = prev.get("macd", {}).get("histogram", 0)
+            curr_hist = stock["macd"]["histogram"]
+            if prev_hist <= 0 < curr_hist:
+                changes.append({
+                    "symbol": sym,
+                    "type": "MACD_BULLISH_CROSS",
+                    "detail": f"MACD crossed bullish (hist: {prev_hist:.4f} -> {curr_hist:.4f})",
+                    "price": stock["price"],
+                    "priority": "HIGH",
+                })
+            elif prev_hist >= 0 > curr_hist:
+                changes.append({
+                    "symbol": sym,
+                    "type": "MACD_BEARISH_CROSS",
+                    "detail": f"MACD crossed bearish (hist: {prev_hist:.4f} -> {curr_hist:.4f})",
+                    "price": stock["price"],
+                    "priority": "HIGH",
+                })
+
+            # Detect stochastic crossover
+            prev_k = prev.get("stochastic", {}).get("k", 50)
+            curr_k = stock["stochastic"]["k"]
+            if prev_k <= 20 < curr_k:
+                changes.append({
+                    "symbol": sym,
+                    "type": "STOCH_BULLISH_CROSS",
+                    "detail": f"Stochastic crossed up from oversold (%K: {prev_k:.0f} -> {curr_k:.0f})",
+                    "price": stock["price"],
+                    "priority": "MEDIUM",
+                })
+            elif prev_k >= 80 > curr_k:
+                changes.append({
+                    "symbol": sym,
+                    "type": "STOCH_BEARISH_CROSS",
+                    "detail": f"Stochastic crossed down from overbought (%K: {prev_k:.0f} -> {curr_k:.0f})",
+                    "price": stock["price"],
+                    "priority": "MEDIUM",
+                })
+
+            # Detect volume spikes
+            if stock.get("volume_ratio", 0) >= vol_spike:
+                prev_vol_ratio = prev.get("volume_ratio", 1)
+                if prev_vol_ratio < vol_spike:
+                    changes.append({
+                        "symbol": sym,
+                        "type": "VOLUME_SPIKE",
+                        "detail": f"Volume {stock['volume_ratio']:.1f}x average ({stock['current_volume']:,.0f} vs avg {stock['avg_volume']:,.0f})",
+                        "price": stock["price"],
+                        "priority": "MEDIUM",
+                    })
+
+        # Sort changes: HIGH priority first
+        priority_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+        changes.sort(key=lambda c: priority_order.get(c.get("priority", "LOW"), 2))
 
         return changes
 
     def generate_summary(self, results: List[Dict], changes: List[Dict]) -> str:
         """Generate a formatted text summary for notification."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M ET")
+
+        # Quick-glance market pulse
+        advancing = len([s for s in results if s["daily_change_pct"] > 0])
+        declining = len([s for s in results if s["daily_change_pct"] < 0])
+        avg_change = sum(s["daily_change_pct"] for s in results) / len(results) if results else 0
+        high_iv_count = len([s for s in results if s["iv_rank"] > 60])
+        overbought_count = len([s for s in results if s["rsi"] > 70])
+        oversold_count = len([s for s in results if s["rsi"] < 30])
+        high_prio = len([c for c in changes if c.get("priority") == "HIGH"])
+
         lines = [
             f"=== MARKET MONITOR SUMMARY ===",
             f"Scan Time: {now}",
-            f"Stocks Analyzed: {len(results)}",
+            f"Stocks Analyzed: {len(results)} | Changes: {len(changes)} ({high_prio} high priority)",
+            "",
+            f"QUICK PULSE: {'RISK-ON' if avg_change > 0.3 else 'RISK-OFF' if avg_change < -0.3 else 'MIXED'}  |  "
+            f"Adv:{advancing} Dec:{declining}  |  Avg:{avg_change:+.2f}%  |  "
+            f"High IV:{high_iv_count}  |  OB:{overbought_count} OS:{oversold_count}",
             "",
         ]
+
+        # High-priority changes first
+        if high_prio:
+            lines.append(f"*** HIGH PRIORITY ALERTS ({high_prio}) ***")
+            for c in changes:
+                if c.get("priority") == "HIGH":
+                    lines.append(f"  [{c['type']}] {c['symbol']} @ ${c['price']:.2f}: {c['detail']}")
+            lines.append("")
 
         # Top 10 performers
         lines.append("--- TOP 10 PERFORMERS ---")
@@ -700,10 +804,11 @@ class MarketMonitor:
                 )
             lines.append("")
 
-        # Changes / Alerts
-        if changes:
-            lines.append(f"--- CHANGES SINCE LAST SCAN ({len(changes)}) ---")
-            for c in changes[:20]:
+        # Changes / Alerts (already showed HIGH priority above, show the rest)
+        medium_changes = [c for c in changes if c.get("priority") != "HIGH"]
+        if medium_changes:
+            lines.append(f"--- OTHER CHANGES SINCE LAST SCAN ({len(medium_changes)}) ---")
+            for c in medium_changes[:20]:
                 lines.append(f"  [{c['type']}] {c['symbol']} @ ${c['price']:.2f}: {c['detail']}")
             lines.append("")
 
@@ -762,13 +867,23 @@ class MarketMonitor:
                     )
                 lines.append("")
 
+        # Volume spikes
+        vol_spikes = [s for s in results if s.get("volume_ratio", 0) >= 2.0]
+        if vol_spikes:
+            vol_spikes.sort(key=lambda x: x["volume_ratio"], reverse=True)
+            lines.append(f"--- VOLUME SPIKES (>2x avg) — {len(vol_spikes)} STOCKS ---")
+            for s in vol_spikes[:10]:
+                lines.append(
+                    f"  {s['symbol']:6s} ${s['price']:.2f} "
+                    f"Vol:{s['current_volume']:,.0f} ({s['volume_ratio']:.1f}x avg) "
+                    f"RSI:{s['rsi']:.0f} Change:{s['daily_change_pct']:+.2f}%"
+                )
+            lines.append("")
+
         # Market breadth summary
-        advancing = len([s for s in results if s["daily_change_pct"] > 0])
-        declining = len([s for s in results if s["daily_change_pct"] < 0])
-        unchanged = len(results) - advancing - declining
-        avg_change = sum(s["daily_change_pct"] for s in results) / len(results) if results else 0
         bullish_count = len([s for s in results if s["trend"] == "BULLISH"])
         bearish_count = len([s for s in results if s["trend"] == "BEARISH"])
+        unchanged = len(results) - advancing - declining
 
         lines.append("--- MARKET BREADTH ---")
         lines.append(f"  Advancing: {advancing} | Declining: {declining} | Unchanged: {unchanged}")
@@ -1066,6 +1181,9 @@ class MarketMonitor:
                     "signals": r["signals"],
                     "macd": r["macd"],
                     "stochastic": r["stochastic"],
+                    "volume_ratio": r.get("volume_ratio", 1.0),
+                    "current_volume": r.get("current_volume", 0),
+                    "avg_volume": r.get("avg_volume", 0),
                 })
             with open(self._state_file, "w") as f:
                 json.dump(slim, f)
