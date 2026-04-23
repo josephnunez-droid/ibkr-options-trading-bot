@@ -8,7 +8,7 @@ connection:
   paper_port: 7497
   live_port: 7496
   client_id: 1
-  trading_mode: "paper"   # "paper" or "live"
+  trading_mode: "live"   # "paper" or "live"
   timeout: 30
   max_reconnect_attempts: 5
   reconnect_delay: 10     # seconds
