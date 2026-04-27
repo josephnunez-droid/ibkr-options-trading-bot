@@ -886,11 +886,12 @@ class MarketMonitor:
             lines.append(f"--- HIGH IV RANK (>60) — {len(high_iv)} STOCKS ---")
             high_iv.sort(key=lambda x: x["iv_rank"], reverse=True)
             for stock in high_iv[:15]:
+                g = stock["greeks"]
                 lines.append(
                     f"  {stock['symbol']:6s} IV:{stock['iv_rank']:.0f} "
-                    f"HV20:{stock['greeks']['hv_20']:.1f}% "
-                    f"Theta~${stock['greeks']['est_theta_daily']:.2f}/day "
-                    f"Vega~${stock['greeks']['est_vega']:.2f}"
+                    f"HV20:{g['hv_20']:.1f}% "
+                    f"Theta~${g.get('call_theta', 0):.2f}/day "
+                    f"Vega~${g.get('call_vega', 0):.2f}"
                 )
             lines.append("")
 
