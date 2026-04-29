@@ -890,8 +890,8 @@ class MarketMonitor:
                 lines.append(
                     f"  {stock['symbol']:6s} IV:{stock['iv_rank']:.0f} "
                     f"HV20:{g['hv_20']:.1f}% "
-                    f"Theta~${g.get('call_theta', 0):.2f}/day "
-                    f"Vega~${g.get('call_vega', 0):.2f}"
+                    f"Theta:{g.get('call_theta', 0):.3f}/day "
+                    f"Vega:{g.get('call_vega', 0):.3f}"
                 )
             lines.append("")
 
